@@ -73,14 +73,14 @@ than silently returning wrong results.
 
 | query | hits | rounds | reads | bytes |
 |---|---|---|---|---|
-| `match_all` | 1500 | **1** | 1 | 9 702 |
-| A · `isRead=true` | 638 | **2** | 2 | 9 890 |
-| A · delivered AND unread | 611 | **2** | 3 | 10 078 |
-| A′ · `createdAt` in June | 196 | **2** | 2 | 12 544 |
-| B · `retryCount >= 3` | 459 | **2** | 3 | 15 414 |
-| B · `sender = Aatu` | 130 | **2** | 2 | 9 890 |
-| C · `subject *lasku*` | 182 | **2** | 6 | 53 703 |
-| **A+B+C combined** | 90 | **2** | **10** | 44 131 |
+| `match_all` | 1500 | **1** | 1 | 9 645 |
+| A · `isRead=true` | 638 | **2** | 2 | 9 833 |
+| A · delivered AND unread | 611 | **2** | 3 | 10 021 |
+| A′ · `createdAt` in June | 196 | **2** | 2 | 12 549 |
+| B · `retryCount >= 3` | 459 | **2** | 3 | 15 357 |
+| B · `sender = Aatu` | 132 | **2** | 2 | 9 833 |
+| C · `subject *lasku*` | 182 | **2** | 6 | 53 646 |
+| **A+B+C combined** | 92 | **2** | **10** | 44 100 |
 
 Rounds stay at two as predicates accumulate; only the number of *independent*
 reads in the wave grows. That is the entire thesis in one column.
@@ -91,14 +91,14 @@ reads in the wave grows. That is the entire thesis in one column.
 
 ```
 query                          hits  rounds reads   bytes   actual   if serial
-match_all                       1500      1     1    9702    32 ms      30 ms
-term isRead=true                 638      2     2    9890    63 ms      60 ms
-range retryCount >= 3            459      2     3   15414    62 ms      90 ms
-wildcard subject *lasku*         182      2     6   72906    62 ms     181 ms
-A+B+C combined                    90      2    11   73032    64 ms     331 ms
+match_all                       1500      1     1    9645    32 ms      30 ms
+term isRead=true                 638      2     2    9833    62 ms      60 ms
+range retryCount >= 3            459      2     3   15357    64 ms      90 ms
+wildcard subject *lasku*         182      2     6   72838    66 ms     181 ms
+A+B+C combined                    92      2    11   72840    65 ms     331 ms
 ```
 
-The combined query issues eleven ranges and still costs two round trips: 64 ms
+The combined query issues eleven ranges and still costs two round trips: 65 ms
 instead of 331 ms. Pagination stays flat at ~32 ms per page from page 1 to page
 44, because a cursor is a sort-key value and the next page is an adjacent
 interval.

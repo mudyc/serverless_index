@@ -26,8 +26,8 @@ const BOOLS = [
 ];
 const OPTIONAL_BOOLS = new Set(['isComplaint', 'isSecure']);
 
-const SENDERS = ['Metsakeskus', 'Aatu', 'Riihi', 'Sermi', 'Mie', 'Ite',
-                 'Jarvikyla', 'Testaaja', 'VPsender', '50102', '70203', 'Aakkonen'];
+const SENDERS = ['Aatu', 'Bertta', 'Celsius', 'Daavid', 'Eemeli', 'Faarao',
+                 'Gideon', 'Heikki', 'Iivari', '10001', '20002', 'Testaaja'];
 const SUBJ_A = ['Lasku', 'Muistutus', 'Ilmoitus', 'Paatos', 'Kutsu', 'Vahvistus', 'Tiedote', 'Kysely'];
 const SUBJ_B = ['metsanhoidosta', 'maksusta', 'kayntikerrasta', 'sopimuksesta',
                 'hakkuusta', 'taimikosta', 'kiinteistosta', 'tilauksesta'];

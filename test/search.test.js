@@ -79,8 +79,8 @@ describe('query DSL agrees with the reference implementation', () => {
     'terms on integer': { terms: { retryCount: [0, 5] } },
     'term on keyword': { term: { sender: 'Aatu' } },
     'term on keyword unknown': { term: { sender: 'Nobody' } },
-    'terms on keyword': { terms: { sender: ['Aatu', 'Riihi', 'Nobody'] } },
-    'prefix on keyword': { prefix: { sender: 'Me' } },
+    'terms on keyword': { terms: { sender: ['Aatu', 'Bertta', 'Nobody'] } },
+    'prefix on keyword': { prefix: { sender: 'Ee' } },
     'prefix on keyword no match': { prefix: { sender: 'Zz' } },
     'wildcard on keyword': { wildcard: { sender: '*a*o*' } },
     'exists on optional date': { exists: { field: 'deliveredAt' } },
@@ -115,7 +115,7 @@ describe('query DSL agrees with the reference implementation', () => {
 
 test('200 randomly generated bool queries agree with the reference', async () => {
   const fields = ['isDelivered', 'isRead', 'hasAttachment', 'isSecure', 'isTest', 'isBounced', 'isComplaint'];
-  const senders = ['Metsakeskus', 'Aatu', 'Riihi', 'Sermi', 'Mie', 'Ite', 'Jarvikyla', 'Testaaja'];
+  const senders = ['Aatu', 'Bertta', 'Celsius', 'Daavid', 'Eemeli', 'Faarao', 'Gideon', 'Heikki'];
   const words = ['lasku', 'maksusta', 'metsan', 'kutsu', 'hakkuusta', '2026', 'kevat'];
   let seed = 7;
   const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };

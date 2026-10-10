@@ -19,7 +19,7 @@ const queries = {
   'B  retryCount >= 3':           { range: { retryCount: { gte: 3 } } },
   'B  deliveredAt after Jun':     { range: { deliveredAt: { gte: Date.UTC(2026, 5, 1) } } },
   'B  sender = Aatu':            { term: { sender: 'Aatu' } },
-  'B  sender prefix "Me"':        { prefix: { sender: 'Me' } },
+  'B  sender prefix "Ee"':        { prefix: { sender: 'Ee' } },
   'C  subject *lasku*':           { wildcard: { subject: '*lasku*' } },
   'C  subject Muistutus*':        { wildcard: { subject: 'Muistutus*' } },
   'ABC combined':                 { bool: {

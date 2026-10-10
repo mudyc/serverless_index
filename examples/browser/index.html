@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serverless Index — browser</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --surface: #ffffff; --ink: #1b1a17; --ink-2: #55514a;
+    --ink-3: #8a8379; --line: #e6e1d8; --accent: #7a5c2e; --warn: #9c3d2e;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16151300; --bg: #161513; --surface: #1f1d1a; --ink: #f0ece4;
+      --ink-2: #b8b1a5; --ink-3: #7d766b; --line: #332f2a; --accent: #d2ad6b;
+      --warn: #e08a76;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161513; --surface: #1f1d1a; --ink: #f0ece4; --ink-2: #b8b1a5;
+    --ink-3: #7d766b; --line: #332f2a; --accent: #d2ad6b; --warn: #e08a76;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; letter-spacing: -.01em; }
+  p.sub { color: var(--ink-2); margin: 0 0 24px; }
+  .card { background: var(--surface); border: 1px solid var(--line);
+          border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  label { display: block; font-size: .8rem; color: var(--ink-3);
+          text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+  textarea, input { width: 100%; font-family: var(--mono); font-size: 13px;
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px; }
+  textarea { min-height: 150px; resize: vertical; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { button.primary { color: #1b1a17; } }
+  select { font: inherit; padding: 7px 10px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .meter { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono);
+    font-size: 13px; color: var(--ink-2); margin-top: 12px; }
+  .meter b { color: var(--ink); font-weight: 600; }
+  pre { font-family: var(--mono); font-size: 12.5px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+    overflow: auto; max-height: 380px; margin: 0; }
+  .err { color: var(--warn); white-space: pre-wrap; font-family: var(--mono);
+    font-size: 12.5px; }
+  small { color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Serverless Index — straight from the browser</h1>
+  <p class="sub">No server. The page fetches byte ranges of one immutable file
+     over HTTP and evaluates the query locally. Every request is metered.</p>
+
+  <div class="card">
+    <label for="url">Artifact URL</label>
+    <input id="url" value="../../data/messages.l0">
+    <div class="row">
+      <select id="preset"></select>
+      <button id="load">Open</button>
+      <span id="status"><small>not opened</small></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <label for="q">Query</label>
+    <textarea id="q" spellcheck="false"></textarea>
+    <div class="row">
+      <button class="primary" id="run">Run</button>
+      <label style="display:inline;text-transform:none;letter-spacing:0">
+        <input type="checkbox" id="guard" checked style="width:auto"> budget guard
+      </label>
+      <small>requests &le; <input id="lim" value="256" style="width:68px;display:inline"></small>
+    </div>
+    <div class="meter" id="meter"></div>
+  </div>
+
+  <div class="card">
+    <label>Result</label>
+    <pre id="out">—</pre>
+  </div>
+</main>
+
+<script type="module">
+// One import. The browser entry installs the Buffer shim and exposes the same
+// reader the Lambda runs — not a second implementation that could disagree.
+import { open, Budget, BudgetExceeded, estimate } from '../../src/browser.js';
+
+const PRESETS = {
+  'term — one keyword':        { query: { term: { sender: 'Kanto' } }, size: 5 },
+  'bool — must + must_not':    { query: { bool: {
+                                   must: [{ term: { isDelivered: true } }],
+                                   must_not: [{ term: { isTest: true } }] } }, size: 5 },
+  'range — clustering key':    { query: { range: { createdAt: { gte: 1779690087399 } } }, size: 5 },
+  'terms aggregation':         { size: 0, aggs: { s: { terms: { field: 'sender', size: 20 } } } },
+  // `interval: 'year'` means "the key is a YYYYMMDD integer"; this corpus uses
+  // epoch milliseconds, so the interval is numeric. The reader refuses the
+  // mismatch rather than returning nonsense buckets — try it.
+  'histogram + terms sub-agg': { size: 0, aggs: { h: { histogram: {
+                                   field: 'createdAt', interval: 2.6e9,
+                                   aggs: { s: { terms: { field: 'sender', size: 20 } } } } } } },
+  'budget refusal (set limit to 1)': { size: 0, aggs: { s: { terms: { field: 'sender', size: 20 } } } },
+  'wildcard on text':          { query: { wildcard: { subject: '*lasku*' } }, size: 5 },
+};
+
+const $ = id => document.getElementById(id);
+const sel = $('preset');
+for (const k of Object.keys(PRESETS)) sel.add(new Option(k, k));
+const show = (k) => { $('q').value = JSON.stringify(PRESETS[k], null, 2); };
+sel.onchange = () => show(sel.value);
+show(sel.value);
+
+let reader = null;
+
+$('load').onclick = async () => {
+  $('status').innerHTML = '<small>opening…</small>';
+  try {
+    // `open()` picks the transport from the URL and sets a default budget.
+    reader = await open($('url').value, { budget: budget() });
+    const c = reader.catalog;
+    $('status').innerHTML = `<small>${c.docCount.toLocaleString()} docs · ` +
+      `${Object.keys(c.sections).length.toLocaleString()} sections · ` +
+      `clustering key <b>${c.clustering.field}</b></small>`;
+  } catch (e) { reader = null; $('status').innerHTML = `<span class="err">${e.message}</span>`; }
+};
+
+function budget() {
+  if (!$('guard').checked) return null;
+  // `mode: 'throw'` refuses before any byte is fetched. Flip to 'warn' to
+  // measure an existing workload without blocking it.
+  return new Budget({ requests: Number($('lim').value) || 256,
+                      bytes: 256e6, host: 's3', mode: 'throw' });
+}
+
+$('run').onclick = async () => {
+  if (!reader) { $('out').textContent = 'open an artifact first'; return; }
+  let body;
+  try { body = JSON.parse($('q').value); }
+  catch (e) { $('out').innerHTML = `<span class="err">bad JSON: ${e.message}</span>`; return; }
+
+  reader.budget = budget();
+  reader.transport.stats = { rounds: 0, bytes: 0, requests: 0 };
+  const t0 = performance.now();
+  try {
+    const res = await reader.search(body);
+    const ms = performance.now() - t0;
+    meter(reader.budget?.spent, ms);
+    $('out').textContent = JSON.stringify(res, null, 2);
+  } catch (e) {
+    meter(reader.budget?.spent, performance.now() - t0);
+    // A budget refusal is the interesting case: it names the field responsible.
+    $('out').innerHTML = `<span class="err">${
+      (e instanceof BudgetExceeded ? e.message : `${e.name}: ${e.message}`)
+        .replace(/[&<]/g, c => ({ '&': '&amp;', '<': '&lt;' }[c]))}</span>`;
+  }
+};
+
+function meter(s, ms) {
+  if (!s) { $('meter').innerHTML = `<span><b>${ms.toFixed(0)}</b> ms</span>`; return; }
+  const usd = estimate(s, 's3').usd;
+  $('meter').innerHTML =
+    `<span><b>${ms.toFixed(0)}</b> ms</span>` +
+    `<span>rounds <b>${s.rounds}</b></span>` +
+    `<span>requests <b>${s.requests.toLocaleString()}</b></span>` +
+    `<span>bytes <b>${(s.bytes / 1e6).toFixed(2)} MB</b></span>` +
+    `<span>cost <b>$${usd.toFixed(8)}</b> <small>on S3</small></span>`;
+}
+
+$('load').click();
+</script>
+</body>
+</html>

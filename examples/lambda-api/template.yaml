@@ -1,0 +1,37 @@
+# sam deploy --guided
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: A search API backed by one immutable L0 artifact on S3.
+
+Parameters:
+  ArtifactBucket: { Type: String }
+  ArtifactKey:    { Type: String, Default: messages.l0 }
+
+Resources:
+  SearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: handler.handler
+      Runtime: nodejs20.x
+      # The reader is memory-light; 512 MB is generous for a 50 MB artifact and
+      # buys proportionally more CPU, which shortens the cold start.
+      MemorySize: 512
+      Timeout: 10
+      Architectures: [arm64]
+      Environment:
+        Variables:
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+          ARTIFACT_KEY: !Ref ArtifactKey
+          NODE_OPTIONS: --enable-source-maps
+      Policies:
+        - S3ReadPolicy: { BucketName: !Ref ArtifactBucket }
+      Events:
+        Search:
+          Type: HttpApi
+          Properties: { Path: /search, Method: POST }
+
+Outputs:
+  Url:
+    Description: POST an OpenSearch-shaped body here
+    Value: !Sub 'https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/search'

@@ -1,0 +1,8 @@
+node_modules/
+data/*.json
+data/*.l0
+data/*.l0.*
+*.env
+*.pem
+*.key
+.DS_Store

@@ -1,0 +1,28 @@
+{
+  "name": "serverless-index",
+  "version": "0.1.0",
+  "description": "An immutable, range-readable search index. One artifact on static storage; a reader that runs in a Lambda or a browser with no server in between.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "exports": {
+    ".": "./src/index.js",
+    "./node": "./src/node.js",
+    "./browser": "./src/browser.js",
+    "./lambda": "./adapters/lambda.js",
+    "./cost": "./src/cost.js",
+    "./transport/file": "./src/transport/file.js",
+    "./transport/http": "./src/transport/http.js",
+    "./transport/chunked-http": "./src/transport/chunked-http.js",
+    "./transport/latency": "./src/transport/latency.js"
+  },
+  "browser": { "./src/index.js": "./src/browser.js" },
+  "files": ["src", "adapters", "docs", "README.md"],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "build-index": "node tools/build-index.js",
+    "demo": "node tools/demo.js"
+  },
+  "keywords": ["index", "search", "serverless", "s3", "http-range", "lambda", "olap", "hilbert"],
+  "dependencies": {}
+}

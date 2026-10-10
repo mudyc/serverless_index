@@ -18,7 +18,7 @@ const queries = {
   "A' createdAt in June":         { range: { createdAt: { gte: Date.UTC(2026, 5, 1), lt: Date.UTC(2026, 6, 1) } } },
   'B  retryCount >= 3':           { range: { retryCount: { gte: 3 } } },
   'B  deliveredAt after Jun':     { range: { deliveredAt: { gte: Date.UTC(2026, 5, 1) } } },
-  'B  sender = Kanto':            { term: { sender: 'Kanto' } },
+  'B  sender = Aatu':            { term: { sender: 'Aatu' } },
   'B  sender prefix "Me"':        { prefix: { sender: 'Me' } },
   'C  subject *lasku*':           { wildcard: { subject: '*lasku*' } },
   'C  subject Muistutus*':        { wildcard: { subject: 'Muistutus*' } },

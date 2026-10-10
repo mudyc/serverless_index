@@ -22,7 +22,7 @@ const queries = {
   'term isRead=true': { term: { isRead: true } },
   'range createdAt (1 month)': { range: { createdAt: { gte: Date.UTC(2026, 5, 1), lt: Date.UTC(2026, 6, 1) } } },
   'range retryCount >= 3': { range: { retryCount: { gte: 3 } } },
-  'term sender=Kanto': { term: { sender: 'Kanto' } },
+  'term sender=Aatu': { term: { sender: 'Aatu' } },
   'wildcard subject *lasku*': { wildcard: { subject: '*lasku*' } },
   'A+B+C combined': {
     bool: {

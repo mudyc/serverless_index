@@ -15,7 +15,7 @@ const handler = createHandler({
 });
 
 const QUERIES = [
-  { query: { term: { sender: 'Kanto' } }, size: 3 },
+  { query: { term: { sender: 'Aatu' } }, size: 3 },
   { size: 0, aggs: { s: { terms: { field: 'sender', size: 20 } } } },
   { query: { wildcard: { subject: '*lasku*' } }, size: 2 },
   { query: { range: { retryCount: { gte: 3 } } }, size: 2 },

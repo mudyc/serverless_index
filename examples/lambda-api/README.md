@@ -7,7 +7,7 @@ the Lambda reads byte ranges of an immutable artifact and answers.
 aws s3 cp data/messages.l0 s3://$BUCKET/messages.l0
 sam deploy --guided --parameter-overrides ArtifactBucket=$BUCKET
 
-curl -s -XPOST "$URL/search" -d '{"query":{"term":{"sender":"Kanto"}},"size":3}'
+curl -s -XPOST "$URL/search" -d '{"query":{"term":{"sender":"Aatu"}},"size":3}'
 ```
 
 Run it locally first — same handler, no deploy:
@@ -18,7 +18,7 @@ node examples/lambda-api/local.js http://127.0.0.1:8080/data/messages.l0
 ```
 
 ```
-200 {"query":{"term":{"sender":"Kanto"}},"size":3}      26ms  req=2 bytes=12132  usd=0.00000080  hits=1651
+200 {"query":{"term":{"sender":"Aatu"}},"size":3}      26ms  req=2 bytes=12132  usd=0.00000080  hits=1651
 200 {"size":0,"aggs":{"s":{"terms":{"field":"sender"...  2ms  req=1 bytes=30000  usd=0.00000040  hits=20000
 200 {"query":{"wildcard":{"subject":"*lasku*"}},...     10ms  req=5 bytes=600774 usd=0.00000200  hits=2567
 200 {"query":{"range":{"retryCount":{"gte":3}}},...      3ms  req=2 bytes=135968 usd=0.00000080  hits=5772

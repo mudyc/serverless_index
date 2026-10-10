@@ -20,8 +20,11 @@
   "files": ["src", "adapters", "docs", "README.md"],
   "scripts": {
     "test": "node --test test/*.test.js",
+    "gen": "node tools/gen-data.js",
+    "build": "node tools/build-index.js",
     "build-index": "node tools/build-index.js",
-    "demo": "node tools/demo.js"
+    "demo": "node tools/demo.js",
+    "latency": "node tools/latency-demo.js"
   },
   "keywords": ["index", "search", "serverless", "s3", "http-range", "lambda", "olap", "hilbert"],
   "dependencies": {}

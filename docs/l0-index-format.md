@@ -26,7 +26,7 @@ npm run gen        # 1500 deterministic documents
 npm run build      # -> data/messages.l0
 npm run demo       # every query type, with probe accounting
 npm run latency    # the same queries at 30 ms per round trip
-npm test           # 87 tests
+npm test           # 110 tests
 ```
 
 ## What it does
@@ -43,7 +43,7 @@ await client.search({ index: 'messages', body: {
       { term:     { isDelivered: true } },                                   // boolean bitmap
       { range:    { createdAt: { gte: '2026-06-01T00:00:00Z' } } },          // clustering interval
       { range:    { retryCount: { lte: 2 } } },                              // numeric column
-      { term:     { sender: 'Kanto' } },                                     // keyword bitmap
+      { term:     { sender: 'Aatu' } },                                     // keyword bitmap
       { wildcard: { subject: '*lasku*' } },                                  // trigram infix
     ],
     must_not: [{ term: { isTest: true } }],
@@ -73,14 +73,14 @@ than silently returning wrong results.
 
 | query | hits | rounds | reads | bytes |
 |---|---|---|---|---|
-| `match_all` | 1500 | **1** | 1 | 33 456 |
-| A · `isRead=true` | 638 | **2** | 2 | 33 644 |
-| A · delivered AND unread | 611 | **2** | 4 | 34 020 |
-| A′ · `createdAt` in June | 196 | **2** | 2 | 35 766 |
-| B · `retryCount >= 3` | 459 | **2** | 3 | 39 168 |
-| B · `sender = Kanto` | 130 | **2** | 2 | 33 644 |
-| C · `subject *lasku*` | 182 | **2** | 6 | 77 457 |
-| **A+B+C combined** | 90 | **2** | **13** | 133 382 |
+| `match_all` | 1500 | **1** | 1 | 9 702 |
+| A · `isRead=true` | 638 | **2** | 2 | 9 890 |
+| A · delivered AND unread | 611 | **2** | 3 | 10 078 |
+| A′ · `createdAt` in June | 196 | **2** | 2 | 12 544 |
+| B · `retryCount >= 3` | 459 | **2** | 3 | 15 414 |
+| B · `sender = Aatu` | 130 | **2** | 2 | 9 890 |
+| C · `subject *lasku*` | 182 | **2** | 6 | 53 703 |
+| **A+B+C combined** | 90 | **2** | **10** | 44 131 |
 
 Rounds stay at two as predicates accumulate; only the number of *independent*
 reads in the wave grows. That is the entire thesis in one column.
@@ -91,16 +91,22 @@ reads in the wave grows. That is the entire thesis in one column.
 
 ```
 query                          hits  rounds reads   bytes   actual   if serial
-term isRead=true                 638      2     2   33644    65 ms      60 ms
-range retryCount >= 3            459      2     3   39168    64 ms      90 ms
-wildcard subject *lasku*         182      2     6  143174    65 ms     181 ms
-A+B+C combined                    90      2    13  231504    69 ms     392 ms
+match_all                       1500      1     1    9702    32 ms      30 ms
+term isRead=true                 638      2     2    9890    63 ms      60 ms
+range retryCount >= 3            459      2     3   15414    62 ms      90 ms
+wildcard subject *lasku*         182      2     6   72906    62 ms     181 ms
+A+B+C combined                    90      2    11   73032    64 ms     331 ms
 ```
 
-The combined query issues thirteen ranges and still costs two round trips: 69 ms
-instead of 392 ms. Pagination stays flat at ~64 ms per page from page 1 to page
+The combined query issues eleven ranges and still costs two round trips: 64 ms
+instead of 331 ms. Pagination stays flat at ~32 ms per page from page 1 to page
 44, because a cursor is a sort-key value and the next page is an adjacent
 interval.
+
+The read counts here are lower than an earlier revision of this table reported,
+because the reader no longer merges adjacent ranges by default — merging buys
+nothing when the whole wave is already in flight, and it fetched the gaps as
+well. See `src/transport/coalesce.js`.
 
 ## Format
 

@@ -20,7 +20,7 @@ export class HttpTransport {
     this.reset();
   }
 
-  reset() { this.stats = { rounds: 0, reads: 0, bytes: 0 }; }
+  reset() { this.stats = { rounds: 0, reads: 0, bytes: 0, fetchMs: 0 }; }
 
   async open() {
     if (this.size !== null) return this;
@@ -69,7 +69,19 @@ export class HttpTransport {
                                 maxFetchBytes: this.maxFetchBytes });
   }
 
+  /**
+   * Kaikki I/O kulkee tästä, joten odotusaika mitataan yhdessä paikassa.
+   * Kysely jakautuu kahtia: tämä on se osa jota odotetaan, ja loput on
+   * laskentaa. Indeksin koko väite on että jälkimmäinen on pieni.
+   */
   async _raw(ranges) {
+    const now = () => (globalThis.performance ?? Date).now();
+    const t0 = now();
+    try { return await this._rawTimed(ranges); }
+    finally { this.stats.fetchMs += now() - t0; }
+  }
+
+  async _rawTimed(ranges) {
     const groups = this._coalesce(ranges);
     if (groups) {
       const merged = groups.map(g => ({ offset: g.start, length: g.end - g.start }));

@@ -29,7 +29,7 @@ export class LatencyTransport {
 
   reset() {
     this.inner.reset?.();
-    this.stats = { rounds: 0, reads: 0, bytes: 0, simulatedMs: 0 };
+    this.stats = { rounds: 0, reads: 0, bytes: 0, simulatedMs: 0, fetchMs: 0 };
   }
 
   async open() { await this.inner.open(); return this; }
@@ -42,6 +42,7 @@ export class LatencyTransport {
     const transferMs = bytes / (effective * 1024 * 1024) * 1000;
     const ms = this.latencyMs + jitter + transferMs;
     this.stats.simulatedMs += ms;
+    this.stats.fetchMs += ms;          // simuloitu viive ON tämän kuljetuksen odotus
     await sleep(Math.min(ms, 2000));
     return ms;
   }

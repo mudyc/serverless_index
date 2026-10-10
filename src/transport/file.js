@@ -19,7 +19,7 @@ export class FileTransport {
   }
 
   reset() {
-    this.stats = { rounds: 0, reads: 0, bytes: 0 };
+    this.stats = { rounds: 0, reads: 0, bytes: 0, fetchMs: 0 };
   }
 
   async open() {
@@ -57,7 +57,19 @@ export class FileTransport {
     return this.readRange(offset, Math.min(length, total));
   }
 
+  /**
+   * Kaikki I/O kulkee tästä, joten odotusaika mitataan yhdessä paikassa.
+   * Kysely jakautuu kahtia: tämä on se osa jota odotetaan, ja loput on
+   * laskentaa. Indeksin koko väite on että jälkimmäinen on pieni.
+   */
   async _raw(ranges) {
+    const now = () => (globalThis.performance ?? Date).now();
+    const t0 = now();
+    try { return await this._rawTimed(ranges); }
+    finally { this.stats.fetchMs += now() - t0; }
+  }
+
+  async _rawTimed(ranges) {
     return Promise.all(ranges.map(async ({ offset, length }) => {
       const buf = Buffer.alloc(length);
       const { bytesRead } = await this.fh.read(buf, 0, length, offset);

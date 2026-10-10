@@ -65,6 +65,7 @@ jokaiseen vastaukseen.
 
 | | |
 | --- | --- |
+| [`docs/idea.md`](docs/idea.md) | **Miksi tämä on olemassa.** Mitä OpenSearch Serverless maksaa jouten, mitä NextGenin 10–30 sekunnin kylmäkäynnistys myöntää, ja mitä aineistolle voi tehdä ilman palvelinta — mitattu verkkokauppaesimerkki 100 000 tuotteella. |
 | [`docs/queries.md`](docs/queries.md) | **Mitä mikin kysely lukee.** Jokainen OpenSearch-muotoinen lauseke, sen käyttämä rakenne (bittikartta / lajiteltu sarake / harva rajataulu / trigrammit / tallennuslohkot) ja kustannuksen kasvu. Mitatut luvut. |
 | [`docs/billing.md`](docs/billing.md) | **Mitä se maksaa.** Hinnoittelu isännittäin, pyynnöt vs. kierrokset, yhdistämissääntö ja sen korjaus, budjetin asettaminen. |
 | [`docs/l0-tekninen-dokumentaatio.md`](docs/l0-tekninen-dokumentaatio.md) · [HTML](docs/l0-tekninen-dokumentaatio.html) | **Miten koko putki kulkee.** Kahdeksan vaihetta sisäänluvusta esitykseen, kukin oma piirretty kaavionsa: sisäänluku, rakennus, artefaktin asettelu, käännös ja suunnittelu, nouto, bittikartta-algebra, aggregoinnit, esitys. Yksitoista SVG-kaaviota ([`docs/kuvat/`](docs/kuvat)); HTML-versiossa ne ovat upotettuina. |

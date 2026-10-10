@@ -96,7 +96,42 @@ Ylemmän kuvan laatikko «katalogi 18,7 MB» kannattaa avata, koska kaikki suunn
 
 Jakosuhde on se mitä kannattaa katsoa. Lähes kaikki tila menee osoitteisiin ja nimiin — sektioiden siirtymiin ja avainsanojen arvoluetteloihin — eikä kumpikaan kerro datasta mitään, ne vain paikantavat sen. Varsinaisen työn tekee 0,07 MB: harva indeksi ja klusterointirajat, joiden ansiosta välikysely löytää granulansa ilman yhtään koetinta.
 
+Osoitteenmuodostus kannattaa katsoa loppuun asti, koska siinä on se kohta jossa nimestä tulee tavuja.
+
+![osoitteenmuodostus · arvoluettelo ja harva indeksi, molemmat sections-laatikon kautta](kuvat/05c-osoitteenmuodostus.svg)
+
+*osoitteenmuodostus · arvoluettelo ja harva indeksi, molemmat sections-laatikon kautta*
+
 Yksikään haku ei siis selviä yhdellä laatikolla. Avainsanaehto `ajoneuvoluokka = M1` katsoo ensin arvoluettelosta, että arvoa M1 vastaa sektio `bm:ajoneuvoluokka:kw:M1`, ja vasta `sections` kertoo sen tavut: siirtymä 422 689 204, pituus 661 056. Väliehto `kayttoonotto 20200101..20260630` kulkee samoin kahdessa askeleessa: harva indeksi antaa muistissa sijaintivälin 4 251 648 – 5 288 424, ja `sections` antaa sarakkeen perusosoitteen 3 305 280, josta tavualue lasketaan — 3 305 280 + 4 251 648 × 8 = 37 318 464, pituus 8 294 216. Koska `kayttoonotto` on klusterointiavain, sen doc-id-sarake on implisiittinen eikä sitä noudeta lainkaan. Koko kysely on kaksi tavualuetta ja yksi kierros, ja se tuottaa 602 214 osumaa.
+
+Katalogi on JSON, ja juuri nämä rivit suunnittelu lukee. Muutama rivi kutakin osaa, sellaisena kuin ne artefaktissa ovat:
+
+```json
+{"formatVersion":2,"index":"vehicles","version":1,
+ "contentHash":"63789dfb686c117a","docCount":5288425}
+
+"clustering": {"field":"kayttoonotto","direction":"asc",
+  "boundaries":[[19000101,0],[19540101,8192],[19580101,16384]]}   // 647 riviä
+
+"fields": {
+  "ajoneuvoluokka": {"type":"keyword",
+    "values":{"C1":{"section":"bm:ajoneuvoluokka:kw:C1","count":24},
+              "M1":{"section":"bm:ajoneuvoluokka:kw:M1","count":2646463}}},
+  "kayttoonotto": {"type":"numeric","clustering":true,"granule":8192,
+    "count":5288425,"implicitDocs":true,
+    "sections":{"values":"col:kayttoonotto:values"},
+    "sparse":[[19000101,0],[19540101,8192],[19580101,16384]]}}     // 647 riviä
+
+"sections": {                                                    // 112 724 riviä
+  "bm:ajoneuvoluokka:kw:M1": {"offset":422689204,"length":661056,"kind":"bitmap"},
+  "col:kayttoonotto:values": {"offset":3305280,"length":42307400},
+  "bm:kayttovoima:kw:10":    {"offset":431148332,"length":32,"kind":"ids"}}
+
+"stored": {"blockSize":512,                                       // 10 329 lohkoa
+  "blocks":[{"offset":520351132,"length":152636,"firstDoc":0,"count":512}]}
+```
+
+Avainsanakentän `values`-avain on itse arvo sellaisena kuin se aineistossa on, ei mikään sisäinen tunnus. Siksi `ajoneuvoluokka` enumeroituu luettavasti, mutta `kayttovoima` ei: sen arvot ovat lähdeaineiston koodeja `10` ja `11`, eivät nimiä. Sektion nimi johdetaan arvosta, joten se on `bm:ajoneuvoluokka:kw:M1` eikä `bm:ajoneuvoluokka:M1`.
 
 Riippumattomuus on suunnittelun tavoite, ei sattuma. Jos jokin alue voitaisiin määrittää vasta toisen sisällön perusteella, kysely maksaisi kaksi kierrosta yhden sijaan. Siksi myös aggregointien ja toissijaisen lajittelun tarvitsemat sektiot arvioidaan katalogin tilastoista etukäteen ja ajetaan samassa aallossa: ylimääräinen noudettu tavu on halvempi kuin ylimääräinen kierros.
 
@@ -119,7 +154,7 @@ Sivutus on k:nnen ykkösbitin etsintä. Koska dokumentin tunniste on sen sijaint
 
 Tämä on myös syy siihen, ettei tulosjoukon kokoa tarvitse rajoittaa. OpenSearchissa syvä sivutus on kallista, koska se edellyttää tulosten lajittelua ja siirtämistä solmujen välillä, ja siksi oletusraja on 10 000 osumaa. Bittikartta miljoonalle osumalle on 125 kB, ja miljoonannen osuman löytäminen on sama operaatio kuin tuhannennen.
 
-Bittikartat koodataan kahdella tavalla sen mukaan kumpi on pienempi: tiheänä bittijonona tai järjestettynä tunnisteluettelona. Valinta tehdään rakennusaikana sektiokohtaisesti, joten harvinainen arvo ei maksa tiheän kartan hintaa.
+Bittikartat koodataan kahdella tavalla sen mukaan kumpi on pienempi: tiheänä bittijonona tai järjestettynä tunnisteluettelona. Valinta tehdään rakennusaikana sektiokohtaisesti, joten harvinainen arvo ei maksa tiheän kartan hintaa. Mitattuna ero on iso: 112 724 sektiosta vain 77 on tiheitä bittikarttoja, kukin 661 056 tavua, ja loput 112 629 ovat tunnisteluetteloita, keskimäärin 508 tavua. Sektio bm:kayttovoima:kw:10 on 32 tavua, koska sitä käyttövoimaa on seitsemällä ajoneuvolla — tiheä kartta olisi ollut 20 000-kertainen.
 
 
 ## Vaihe 7 — Aggregoinnit

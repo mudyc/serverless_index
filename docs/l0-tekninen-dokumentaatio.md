@@ -88,6 +88,14 @@ Kysely tekee yhden noutoaallon: kaikki tarvittavat tavualueet lähtevät samaan 
 
 *nouto · avaus kaksi kierrosta, kysely yksi*
 
+Ylemmän kuvan laatikko «katalogi 18,7 MB» kannattaa avata, koska kaikki suunnittelu tehdään sen varassa.
+
+![katalogi avattuna · mihin kysymykseen kukin osa vastaa](kuvat/05b-katalogi-avattuna.svg)
+
+*katalogi avattuna · mihin kysymykseen kukin osa vastaa*
+
+Jakosuhde on se mitä kannattaa katsoa. Lähes kaikki tila menee osoitteisiin ja nimiin — sektioiden siirtymiin ja avainsanojen arvoluetteloihin — eikä kumpikaan kerro datasta mitään, ne vain paikantavat sen. Varsinaisen työn tekee 0,07 MB: harva indeksi ja klusterointirajat, joiden ansiosta välikysely löytää granulansa ilman yhtään koetinta.
+
 Riippumattomuus on suunnittelun tavoite, ei sattuma. Jos jokin alue voitaisiin määrittää vasta toisen sisällön perusteella, kysely maksaisi kaksi kierrosta yhden sijaan. Siksi myös aggregointien ja toissijaisen lajittelun tarvitsemat sektiot arvioidaan katalogin tilastoista etukäteen ja ajetaan samassa aallossa: ylimääräinen noudettu tavu on halvempi kuin ylimääräinen kierros.
 
 Yhdistämissääntö jouduttiin korjaamaan mittauksen perusteella. Alkuperäinen päättely oli, että vierekkäiset alueet kannattaa yhdistää kun aukko on pienempi kuin viive kertaa kaistanleveys — S3:lla noin 3 MB — mutta se oletti vaihtoehdoksi toisen kierroksen. Rinnakkaisessa aallossa vaihtoehto on yksi lisäalue ilman lisäviivettä, joten yhdistäminen vain lisää tavuja. Nykyinen sääntö yhdistää vain päästäkseen rinnakkaisuusbudjetin alle tai mitättömän pienen, 32 kB:n aukon yli.

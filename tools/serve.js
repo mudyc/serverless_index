@@ -16,7 +16,10 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 
 createServer((req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
-  const path = join(ROOT, normalize(url === '/' ? '/index.html' : url).replace(/^(\.\.[/\\])+/, ''));
+  let path = join(ROOT, normalize(url).replace(/^(\.\.[/\\])+/, ''));
+  // Serve a directory's index.html, the way every static host does — otherwise
+  // examples/browser/ 404s and the example looks broken.
+  if (existsSync(path) && statSync(path).isDirectory()) path = join(path, 'index.html');
   if (!existsSync(path) || statSync(path).isDirectory()) { res.writeHead(404).end('not found'); return; }
   const { size } = statSync(path);
   const type = TYPES[extname(path)] ?? 'application/octet-stream';

@@ -9,6 +9,7 @@
  * boolean-false and null semantics are actually exercised.
  */
 import { writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 
 function mulberry32(seed) {
   return function () {
@@ -54,6 +55,7 @@ export function generate({ count = 1500, seed = 42 } = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  mkdirSync(new URL('../data/', import.meta.url), { recursive: true });
   const docs = generate({ count: Number(process.argv[2] ?? 1500) });
   await writeFile(new URL('../data/docs.json', import.meta.url), JSON.stringify(docs));
   console.log(`generated ${docs.length} documents -> data/docs.json`);

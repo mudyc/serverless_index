@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { build } from '../src/build/builder.js';
+import { mkdirSync } from 'node:fs';
 
+mkdirSync(new URL('../data/', import.meta.url), { recursive: true });
 const docs = JSON.parse(await readFile(new URL('../data/docs.json', import.meta.url), 'utf8'));
 const outPath = new URL('../data/messages.l0', import.meta.url).pathname;
 const { catalog, bytes } = await build({ docs, index: 'messages', outPath });

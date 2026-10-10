@@ -33,6 +33,11 @@ export class ChunkedHttpTransport {
     if (m.format !== 'l0-split-1') throw new Error(`${this.manifestUrl}: unknown format ${m.format}`);
     this.size = m.size; this.part = m.part; this.parts = m.parts;
     this.base = new URL(m.name, this.manifestUrl).href;
+    // Osien nimet eivät muutu kun artefakti rakennetaan uudelleen, joten selain
+    // voi tarjota vanhan palan uuden manifestin rinnalle. Silloin footer osuu
+    // väärään kohtaan ja lukija kaatuu "bad magic" -virheeseen. Manifestin koko
+    // vaihtuu aina kun sisältö vaihtuu, joten se kelpaa versioksi.
+    this.ver = String(m.size);
     return this;
   }
 
@@ -58,7 +63,10 @@ export class ChunkedHttpTransport {
     return bufs;
   }
 
-  _url(i) { return `${this.base}.${String(i).padStart(3, '0')}`; }
+  _url(i) {
+    const u = `${this.base}.${String(i).padStart(3, '0')}`;
+    return this.ver ? `${u}?v=${this.ver}` : u;
+  }
 
   /**
    * Same policy as the single-file transport (see coalesce.js), applied BEFORE

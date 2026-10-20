@@ -24,7 +24,8 @@
     "build": "node tools/build-index.js",
     "build-index": "node tools/build-index.js",
     "demo": "node tools/demo.js",
-    "latency": "node tools/latency-demo.js"
+    "latency": "node tools/latency-demo.js",
+    "l1-measure": "node tools/l1-measure.js"
   },
   "keywords": ["index", "search", "serverless", "s3", "http-range", "lambda", "olap", "hilbert"],
   "dependencies": {}

@@ -3,6 +3,7 @@ import { MAGIC, FOOTER_LEN } from '../format.js';
 import { compile, QueryError } from '../query/compile.js';
 import { planFetches, evaluate, decodeSet as decodeSection } from './plan.js';
 import { Budget } from '../cost.js';
+import { Overlay } from '../l1/overlay.js';
 
 export class Reader {
   /**
@@ -61,7 +62,27 @@ export class Reader {
     if (!footer.subarray(0, 8).equals(MAGIC)) throw new Error('not an L0 artifact (bad magic)');
     const buf = await this.transport.readRange(footer.readUInt32LE(8), footer.readUInt32LE(12));
     this.catalog = JSON.parse(buf.toString('utf8'));
+    this.baseCatalog = this.catalog;
+    this.overlay = null;
     this.transport.reset();                      // catalog is phase 0 — free thereafter
+    return this;
+  }
+
+  /**
+   * L1 phase 1: apply one inline delta on top of the base (docs/l1-malli.md §11).
+   * The base catalog and every cached section stay valid — they are immutable —
+   * so applying a newer delta never invalidates anything already fetched.
+   */
+  applyDelta(delta) {
+    const base = this.baseCatalog;
+    if (!delta) { this.overlay = null; this.catalog = base; return this; }
+    if (this.overlay && delta.seq < this.overlay.seq) {
+      // Monotonicity (idx_research.md §2): never step back to an older version.
+      throw new Error(`delta seq ${delta.seq} is older than the applied ${this.overlay.seq}`);
+    }
+    const ov = new Overlay(base, delta);
+    this.overlay = ov;
+    this.catalog = { ...base, docCount: ov.N, baseDocCount: base.docCount, _overlay: ov };
     return this;
   }
 
@@ -100,6 +121,7 @@ export class Reader {
     // ---- phase 1: one wave ---------------------------------------------
     const got = await this._wave(ranges);
     const hits = evaluate(plan, got, cat);
+    if (this.overlay) hits.and(this.overlay.live);
     const total = hits.popcount();
     const aggregations = this._runAggs(aggPlans, hits, got);
 
@@ -244,7 +266,7 @@ export class Reader {
         const sec = cat.sections[e.section];
         ranges.set(e.section, { offset: sec.offset, length: sec.length });
       }
-      return { name: n2, entries, size: t.size ?? 20 };
+      return { name: n2, field: t.field, entries, size: t.size ?? 20 };
     });
     const interval = h.interval ?? 'year';
     // `year` means "the integer is YYYYMMDD" — it buckets by v/10000. On an
@@ -269,7 +291,11 @@ export class Reader {
   _runHistogram(p, hits, got) {
     const cat = this.catalog;
     const vbuf = got.get(p.key);
-    const n = cat.fields[p.field].count;
+    const ov = this.overlay;
+    const baseN = cat.fields[p.field].count;
+    // Appended documents continue the clustering order (the writer enforces it),
+    // so their buckets extend the same run of doc-ID intervals.
+    const n = ov ? ov.N : baseN;
     const bucketOf = p.interval === 'year'
       ? v => Math.floor(v / 10000)
       : v => Math.floor(v / p.interval) * p.interval;
@@ -277,7 +303,14 @@ export class Reader {
     const bounds = [];
     let cur = null;
     for (let i = 0; i < n; i++) {
-      const b = bucketOf(vbuf.readDoubleLE(i * 8));
+      let v;
+      if (i < baseN) v = vbuf.readDoubleLE(i * 8);
+      else {
+        const doc = ov.docs.get(i);
+        if (!doc) continue;                    // deleted append: a hole, never a hit
+        v = doc[p.field];
+      }
+      const b = bucketOf(v);
       if (cur === null || b !== cur.key) { if (cur) cur.to = i; bounds.push(cur = { key: b, from: i, to: n }); }
     }
     if (cur) cur.to = n;
@@ -293,10 +326,17 @@ export class Reader {
     const nb = bounds.length;
     const subCounts = p.subs.map(s => {
       if (s.numeric) return null;
-      return s.entries.map(([k, e]) => {
+      const field = s.field;
+      const ovTerms = ov ? this._overlayTerms(field, hits) : new Map();
+      const rows = s.entries.map(([k, e]) => {
         const sec = cat.sections[e.section], buf = got.get(e.section);
         const row = new Int32Array(nb);
-        if (sec.kind === 'ids') {
+        for (const d of ovTerms.get(k) ?? []) { const bi = bucketOfDoc[d]; if (bi >= 0) row[bi]++; }
+        ovTerms.delete(k);
+        if (ov) {
+          const bm = decodeSection(cat, e.section, buf).and(hits).andNot(ov.dirty(field));
+          for (let bi = 0; bi < nb; bi++) row[bi] += bm.popcountRange(bounds[bi].from, bounds[bi].to);
+        } else if (sec.kind === 'ids') {
           const cnt = buf.readUInt32LE(0);
           for (let i = 0; i < cnt; i++) {
             const d = buf.readUInt32LE(4 + i * 4);
@@ -310,25 +350,27 @@ export class Reader {
         }
         return [k, row];
       });
+      for (const [k, ids] of ovTerms) {
+        const row = new Int32Array(nb);
+        for (const d of ids) { const bi = bucketOfDoc[d]; if (bi >= 0) row[bi]++; }
+        rows.push([k, row]);
+      }
+      return rows;
     });
 
     // One pass per numeric sub-aggregation fills every bucket simultaneously.
     const numStats = p.subs.map(s => {
       if (!s.numeric) return null;
-      const vbuf = got.get(s.vKey), dbuf = s.dKey ? got.get(s.dKey) : null;
-      const n2 = s.fm.count;
       const acc = bounds.map(() => ({ count: 0, sum: 0, min: Infinity, max: -Infinity }));
-      for (let i = 0; i < n2; i++) {
-        const doc = dbuf ? dbuf.readUInt32LE(i * 4) : i;
-        if (!hits.get(doc)) continue;
+      this._forEachNumeric(s, got, (doc, v) => {
+        if (!hits.get(doc)) return;
         const bi = bucketOfDoc[doc];
-        if (bi < 0) continue;
-        const v = vbuf.readDoubleLE(i * 8);
+        if (bi < 0) return;
         const a = acc[bi];
         a.count++; a.sum += v;
         if (v < a.min) a.min = v;
         if (v > a.max) a.max = v;
-      }
+      });
       return acc;
     });
     const buckets = bounds
@@ -359,6 +401,34 @@ export class Reader {
     return { buckets };
   }
 
+  /** Overlay docs in `hits` grouped by their term key for `field`. */
+  _overlayTerms(field, hits) {
+    const out = new Map();
+    const type = this.catalog.fields[field]?.type;
+    for (const [d, v] of this.overlay.entries(field)) {
+      if (!hits.get(d) || v === undefined || v === null) continue;
+      let key;
+      if (type === 'boolean') { if (v !== true) continue; key = 'true'; }
+      else key = String(v);
+      if (!out.has(key)) out.set(key, []);
+      out.get(key).push(d);
+    }
+    return out;
+  }
+
+  /** Every (doc, value) of a numeric column, with the overlay's values substituted. */
+  _forEachNumeric(sub, got, fn) {
+    const ov = this.overlay;
+    const vbuf = got.get(sub.vKey), dbuf = sub.dKey ? got.get(sub.dKey) : null;
+    const n2 = sub.fm.count;
+    for (let i = 0; i < n2; i++) {
+      const doc = dbuf ? dbuf.readUInt32LE(i * 4) : i;
+      if (ov && ov.isDirty(sub.field, doc)) continue;
+      fn(doc, vbuf.readDoubleLE(i * 8));
+    }
+    if (ov) for (const [d, v] of ov.entries(sub.field)) if (typeof v === 'number') fn(d, v);
+  }
+
   _runAggs(plans, hits, got) {
     if (plans.length === 0) return null;
     const cat = this.catalog;
@@ -375,6 +445,13 @@ export class Reader {
       // min_doc_count could discard it was the entire cost of a faceted query
       // over a high-cardinality field — 15 651 brands decoded and AND-ed to keep
       // 26, measured at 3 898 ms against 31 ms for the same 26 buckets.
+      const ov = this.overlay;
+      // L1: documents dirty in this field are counted from the overlay instead.
+      const ovTerms = ov ? this._overlayTerms(p.field, hits) : new Map();
+      const baseMask = (e, buf) => {
+        const bm = decodeSection(cat, e.section, buf).and(hits);
+        return ov ? bm.andNot(ov.dirty(p.field)) : bm;
+      };
       for (const [key, e] of p.entries) {
         const sec = cat.sections[e.section];
         const buf = got.get(e.section);
@@ -382,16 +459,36 @@ export class Reader {
         if (sec.kind === 'ids') {
           const cnt = buf.readUInt32LE(0);
           n = 0;
-          for (let i = 0; i < cnt; i++) if (hits.get(buf.readUInt32LE(4 + i * 4))) n++;
+          for (let i = 0; i < cnt; i++) {
+            const d = buf.readUInt32LE(4 + i * 4);
+            if (hits.get(d) && !(ov && ov.isDirty(p.field, d))) n++;
+          }
         } else {
-          bm = decodeSection(cat, e.section, buf).and(hits);
+          bm = baseMask(e, buf);
           n = bm.popcount();
         }
+        const extra = ovTerms.get(key) ?? [];
+        ovTerms.delete(key);
+        n += extra.length;
         if (n < p.minDocCount) continue;
         buckets.push({ key, doc_count: n });
         // Built here, after the term has earned it — and only when a numeric
         // sub-aggregation will actually scan it.
-        if (wantMasks) masks.push(bm ?? decodeSection(cat, e.section, buf).and(hits));
+        if (wantMasks) {
+          const mask = bm ?? baseMask(e, buf);
+          for (const d of extra) mask.set(d);
+          masks.push(mask);
+        }
+      }
+      // Values that exist only in the delta: the base has no section for them.
+      for (const [key, ids] of ovTerms) {
+        if (ids.length < p.minDocCount) continue;
+        buckets.push({ key, doc_count: ids.length });
+        if (wantMasks) {
+          const mask = Bitmap.empty(cat.docCount);
+          for (const d of ids) mask.set(d);
+          masks.push(mask);
+        }
       }
 
       // Numeric sub-aggregations: a terms bucket is a scattered bitmap rather
@@ -401,19 +498,15 @@ export class Reader {
         const bucketOfDoc = new Int32Array(cat.docCount).fill(-1);
         masks.forEach((bm, bi) => { for (const d of bm.page(0, cat.docCount)) bucketOfDoc[d] = bi; });
         for (const sub of p.subs) {
-          const vbuf = got.get(sub.vKey), dbuf = sub.dKey ? got.get(sub.dKey) : null;
           const acc = buckets.map(() => ({ count: 0, sum: 0, min: Infinity, max: -Infinity }));
-          const n2 = sub.fm.count;
-          for (let i = 0; i < n2; i++) {
-            const doc = dbuf ? dbuf.readUInt32LE(i * 4) : i;
+          this._forEachNumeric(sub, got, (doc, v) => {
             const bi = bucketOfDoc[doc];
-            if (bi < 0) continue;
-            const v = vbuf.readDoubleLE(i * 8);
+            if (bi < 0) return;
             const a = acc[bi];
             a.count++; a.sum += v;
             if (v < a.min) a.min = v;
             if (v > a.max) a.max = v;
-          }
+          });
           buckets.forEach((b, bi) => {
             const a = acc[bi];
             const avg = a.count ? a.sum / a.count : null;
@@ -545,37 +638,78 @@ export class Reader {
     return { posLo: 0, posHi: m.count - 1, m, vKey, dKey, got: await this._wave(ranges), ranges };
   }
 
+  /**
+   * Walk the sorted column as a permutation. With a delta applied this is a
+   * two-way merge: the base column with dirty documents skipped, and the
+   * overlay's values for the same field, both ordered by (value, docId).
+   *
+   * An overlay entry may only be emitted while the base span can still prove
+   * nothing smaller lies beyond it, so when an incomplete span runs out the walk
+   * stops short and the caller does its (counted) supplementary fetch.
+   */
   _pageBySortColumn(hits, sp, got, body, from, size) {
-    const { order, posLo, posHi, m } = sp;
+    const { order, posLo, posHi, field } = sp;
     const vbuf = got.get(sp.vKey), dbuf = got.get(sp.dKey);
     const n = posHi - posLo + 1;
+    const ov = this.overlay;
+    const desc = order === 'desc';
+    const cmp = (a, b) => (a[0] - b[0]) || (a[1] - b[1]);
+    const before = (a, b) => desc ? cmp(a, b) > 0 : cmp(a, b) < 0;   // a comes first
+
+    const extra = [];
+    if (ov) for (const [d, v] of ov.entries(field)) if (typeof v === 'number') extra.push([v, d]);
+    extra.sort(desc ? (a, b) => cmp(b, a) : cmp);
+
+    let cursor = null;
+    if (body.search_after !== undefined && Array.isArray(body.search_after)) {
+      cursor = [Number(body.search_after[0]), Number(body.search_after.at(-1))];
+    }
+    // A cursor is only honoured if the fetched span provably reaches it: the
+    // span's leading edge must lie at or before the cursor in walk order.
+    // Otherwise entries between the cursor and the span would be skipped
+    // silently, so return nothing and let the caller fetch the whole column.
+    if (cursor && !sp.complete && n > 0) {
+      const edgeK = desc ? n - 1 : 0;
+      const edge = [vbuf.readDoubleLE(edgeK * 8), dbuf.readUInt32LE(edgeK * 4)];
+      const atEnd = desc ? posHi >= sp.m.count - 1 : posLo === 0;
+      if (!atEnd && before(cursor, edge)) return [];
+    }
     const out = [];
     let skipped = 0;
-    let cursorValue = null, cursorDoc = null, passedCursor = true;
-    if (body.search_after !== undefined && Array.isArray(body.search_after)) {
-      cursorValue = Number(body.search_after[0]);
-      cursorDoc = Number(body.search_after.at(-1));
-      passedCursor = false;
-    }
-    const step = order === 'desc' ? -1 : 1;
-    const start = order === 'desc' ? n - 1 : 0;
-    for (let k = start; k >= 0 && k < n && out.length < size; k += step) {
-      const docId = dbuf.readUInt32LE(k * 4);
-      if (!passedCursor) {
-        const v = vbuf.readDoubleLE(k * 8);
-        if (v === cursorValue && docId === cursorDoc) passedCursor = true;
-        continue;
+    let k = desc ? n - 1 : 0, j = 0;
+    const baseAt = () => {
+      while (k >= 0 && k < n) {
+        const d = dbuf.readUInt32LE(k * 4);
+        if (!ov || !ov.isDirty(field, d)) return [vbuf.readDoubleLE(k * 8), d];
+        k += desc ? -1 : 1;
       }
-      if (!hits.get(docId)) continue;
+      return null;
+    };
+    while (out.length < size) {
+      const b = baseAt(), e = j < extra.length ? extra[j] : null;
+      let item;
+      if (b && (!e || before(b, e))) { item = b; k += desc ? -1 : 1; }
+      else if (e && (b || sp.complete)) { item = e; j++; }
+      else break;                     // base span exhausted: cannot order what is past it
+      if (cursor && !before(cursor, item)) continue;
+      if (!hits.get(item[1])) continue;
       if (skipped < from) { skipped++; continue; }
-      out.push(docId);
+      out.push(item[1]);
     }
-    void m;
     return out;
   }
 
   async _fetchStored(docIds) {
     if (docIds.length === 0) return [];
+    const ov = this.overlay;
+    if (ov && docIds.some(d => ov.docs.has(d))) {
+      // A touched document's current value is in the delta (class C: the new
+      // payload replaces the old one, §6). Only untouched ones go to the base.
+      const baseIds = docIds.filter(d => !ov.docs.has(d));
+      const fromBase = await this._fetchStored(baseIds);
+      const byId = new Map(baseIds.map((d, i) => [d, fromBase[i]]));
+      return docIds.map(d => ov.docs.get(d) ?? byId.get(d));
+    }
     const { blockSize, blocks } = this.catalog.stored;
     const wanted = [...new Set(docIds.map(d => Math.floor(d / blockSize)))].sort((a, b) => a - b);
     let groups = coalesce(wanted, blocks, this.coalesceGap);

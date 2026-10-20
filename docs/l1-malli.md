@@ -212,10 +212,14 @@ SQS FIFO (yksi message group)
   hitaaksi.
 - **Root-osoittimella on yksi omistaja** (kirjoittaja). Kompaktori ei
   kirjoita rootia (§8).
-- **docID:n jako:** uusi dokumentti saa seuraavan vapaan docID:n hännästä.
-  Ei-kronologinen lisäys (vanha aikaleima) joko menee häntään päällekkäisellä
-  aikavälillä (karsinta heikkenee, oikeellisuus säilyy) tai granulekohtaiseen
-  varattuun väljyyteen, jos sellainen on rakennettu.
+- **docID:n jako:** uusi dokumentti saa seuraavan vapaan docID:n hännästä, ja
+  sen klusterointiavaimen on jatkettava järjestystä: `(avain, pk)` on suurempi
+  kuin hännän. Ei-kronologinen lisäys hylätään (`L1OrderError`), koska häntään
+  päällekkäisellä aikavälillä se rikkoisi klusterointijärjestyksen — suodatus
+  pysyisi oikeana, mutta lajittelu, `search_after` ja histogrammin docID-välit
+  eivät. Sellainen lisäys vaatii rebuildin (§8) tai granulekohtaisen väljyyden.
+  (Aiempi versio tästä kohdasta väitti oikeellisuuden säilyvän; vaihe 1 osoitti
+  sen vääräksi järjestyksen osalta.)
 
 ## 8. Kompaktointi
 
@@ -311,6 +315,76 @@ kanssa** — pienimmällä mahdollisella muutoksella nykyiseen lukijaan.
 
 Korpukset: 1 500 dokumentin generoitu (`npm run gen`), 100 000 tuotteen
 verkkokauppa (`idea.md` §4) ja tarvittaessa ajoneuvoaineisto.
+
+### 11.1 Vaihe 1: tulokset
+
+Toteutus: `src/l1/overlay.js`, `src/l1/writer.js`, lukijan `applyDelta()`.
+Jokainen yhden kentän lehtipredikaatti P kentällä f arvioidaan muodossa
+`P(base) ANDNOT dirty(f) OR scan(P, deltan dokumentit joissa f muuttui)`, ja
+lopputulos AND `live`. Delta on kokonaan inline (resident).
+
+**Oikeellisuus.** `test/l1.test.js` ajaa satunnaisen operaatiojonon (lisäys,
+osittainen päivitys, korvaus, klusterointiavaimen siirto, poisto) sekä deltaan
+että referenssiin ja vertaa 22 kiinteää ja 60 satunnaista kyselyä kolmessa
+vaiheessa (20, 170 ja 770 operaatiota), toissijaisen lajittelun molempiin
+suuntiin (koko, `from`/`size`, `search_after`), `terms`-aggregoinnin
+numeerisine aliaggregointeineen ja histogrammin. Kaikki täsmäävät.
+Testit tunnistavat rikotun logiikan: kun `ANDNOT dirty` tai live-maski
+poistetaan, 7/14 testiä kaatuu. `tools/l1-measure.js` tarkistaa lisäksi
+jokaisen kyselyn referenssiä vasten 100 000 ja 1 000 000 dokumentilla.
+
+Sivulöydös: toissijaisen lajittelun `search_after` laskevaan suuntaan ei
+saa luottaa siihen, että ankkuroitu väli ulottuu kursoriin asti. Nyt lukija
+tarkistaa välin reunan ja hakee tarvittaessa koko sarakkeen.
+
+**Mittaukset** (`node tools/l1-measure.js <N> 30`; 30 % lisäyksiä, 50 %
+osittaisia päivityksiä, 20 % poistoja; 30 ms simuloitu viive per kierros):
+
+| N | muutos | operaatioita | delta (JSON) | gzip | deltan docit | apply |
+|---|---|---|---|---|---|---|
+| 100 000 | 0,1 % | 100 | 15 kB | 2,3 kB | 64 | 0,6 ms |
+| 100 000 | 1 % | 1 000 | 155 kB | 18 kB | 662 | 1,1 ms |
+| 100 000 | 10 % | 10 000 | 1,4 MB | 154 kB | 6 156 | 7,6 ms |
+| 1 000 000 | 0,1 % | 1 000 | 159 kB | 19 kB | 671 | 1,3 ms |
+| 1 000 000 | 1 % | 10 000 | 1,5 MB | 167 kB | 6 387 | 7,1 ms |
+| 1 000 000 | 10 % | 100 000 | 14,6 MB | 1,5 MB | 61 543 | 103 ms |
+
+Kyselyt, 1 000 000 dokumenttia (kierrokset / lukuja / kB tyhjällä
+välimuistilla; CPU-aika välimuistista, mediaani seitsemästä):
+
+| kysely | base | 0,1 % | 1 % | 10 % |
+|---|---|---|---|---|
+| term bool | 2/2/135 · 0,3 ms | 2/2/135 · 0,7 ms | 2/2/135 · 0,9 ms | 2/2/135 · 6,5 ms |
+| range numeric | 2/3/3531 · 6,1 ms | 2/3/3531 · 5,6 ms | 2/3/3531 · 6,4 ms | 2/3/3531 · 13,1 ms |
+| term keyword | 2/2/144 · 0,3 ms | 2/2/144 · 0,4 ms | 2/2/144 · 0,9 ms | 2/2/144 · 4,9 ms |
+| A+B+C | 2/20/43759 · 59 ms | 2/20/43759 · 63 ms | 2/20/43759 · 59 ms | 2/20/43769 · 72 ms |
+| sort retryCount desc | 2/4/162 · 0,3 ms | 1/3/129 · 0,5 ms | 1/3/129 · 4,5 ms | 1/3/129 · 22 ms |
+| terms agg sender | 1/12/1500 · 1,9 ms | 1/12/1500 · (83 ms)¹ | 1/12/1500 · 2,6 ms | 1/12/1500 · 5,9 ms |
+
+¹ Yksittäinen poikkeama (todennäköisesti GC); muilla muutosasteilla 2–6 ms.
+
+Mitä tästä seuraa:
+
+1. **Kierrokset ja lukujen määrä eivät muutu millään muutosasteella.** Inline-
+   deltalla tämä on rakenteen seuraus, ei sattumaa: delta ei lisää aaltoon
+   yhtään tavualuetta. Hypoteesin "+1 luku live-maskille" oletus oli, että
+   maski on packissa; inline se maksaa nolla. Toissijainen lajittelu putoaa
+   jopa yhteen kierrokseen, kun sivun kaikki osumat ovat deltassa, koska niiden
+   tallennetut kentät ovat jo muistissa.
+2. **Hinta siirtyy tavuista kahteen muuhun paikkaan:** deltan kokoon (noin
+   150 tavua JSONia ja noin 15 tavua gzipattuna per operaatio) ja CPU-aikaan
+   (lehden skannaus on O(deltan dokumentit)). 1 000 000 dokumentilla 10 %
+   muutos maksaa 14,6 MB residenttiä deltaa ja 5–20 ms lisää per kysely.
+3. **Inline-kynnys on noin katalogin kokoluokka.** 1 % muutos 1 000 000
+   dokumentilla (1,5 MB) on jo suurempi kuin itse katalogi (1,1 MB). Tätä
+   suuremmat muutokset kuuluvat packin diff-lohkoihin (vaihe 2) tai
+   kompaktointiin — juuri §5.1:n kokoluokkajako, nyt numeroina.
+4. **Kirjoittajan pk-skannaus on vaiheen 1 suurin oikopolku:** 75 MB ja
+   2,3 s 1 000 000 dokumentilla. Vaihe 3:n pk-sanakirja poistaa sen.
+
+Mittaamatta jäi: deltan haku verkosta (vaiheessa 1 delta annetaan lukijalle
+valmiina; sen siirto on edellä mitattu koko), selaimen jäsennysaika ja
+oikea S3 (vain simuloitu viive).
 
 **Vaihe 2:** root + sisältöosoitetut packit + COW-sivut.
 **Vaihe 3:** sivutettu sanakirja ja T-sääntö; binäärikatalogi.

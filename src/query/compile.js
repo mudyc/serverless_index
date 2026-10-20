@@ -38,24 +38,50 @@ function unwrap(raw) {
   return raw !== null && typeof raw === 'object' && 'value' in raw ? raw.value : raw;
 }
 
+/**
+ * L1 (docs/l1-malli.md §5): with a delta applied, a single-field leaf becomes
+ *   leaf(base) ANDNOT dirty(field)  OR  scan(overlay docs dirty in field).
+ * `test` is the same predicate over one value. It must agree with what the base
+ * structures answer for that value, which the differential tests check.
+ * Fields unknown to the base stay unknown: the type is frozen in the base.
+ */
+function wrap(cat, field, node, test) {
+  if (!cat._overlay) return node;
+  return { op: 'overlay', field, inner: node, test };
+}
+
+const present = v => v !== undefined && v !== null;
+
 function compileTerm(body, cat) {
   const [field] = Object.keys(body);
   const value = unwrap(body[field]);
   const m = meta(field, cat);
   if (!m) return NONE;
   switch (m.type) {
-    case 'boolean': return boolNode(field, value, m);
+    case 'boolean': {
+      const node = boolNode(field, value, m);
+      const want = value === true || value === 'true';
+      return wrap(cat, field, node, v => v === want);
+    }
     case 'numeric': {
       const v = toNumber(value, field);
-      return columnNode(field, m, cat, v, v, true, true);
+      return wrap(cat, field, columnNode(field, m, cat, v, v, true, true),
+                  x => typeof x === 'number' && x === v);
     }
     case 'keyword': {
       const e = m.values[String(value)];
-      return e ? { op: 'section', name: e.section } : NONE;
+      const s = String(value);
+      return wrap(cat, field, e ? { op: 'section', name: e.section } : NONE,
+                  x => present(x) && String(x) === s);
     }
-    case 'text': return wildcardNode(field, m, String(value));
+    case 'text': return textNode(cat, field, m, String(value));
     default: return NONE;
   }
+}
+
+function textNode(cat, field, m, pattern) {
+  const re = wildcardToRegExp(pattern);
+  return wrap(cat, field, wildcardNode(field, m, pattern), x => present(x) && re.test(String(x)));
 }
 
 function compileTerms(body, cat) {
@@ -69,7 +95,7 @@ function compileTerms(body, cat) {
 function compileExists(body, cat) {
   const m = meta(body.field, cat);
   if (!m) return NONE;
-  return { op: 'section', name: m.sections.exists };
+  return wrap(cat, body.field, { op: 'section', name: m.sections.exists }, present);
 }
 
 function boolNode(field, value, m) {
@@ -104,7 +130,8 @@ function compileRange(body, cat) {
   if (spec.gt  !== undefined) { lo = toNumber(spec.gt, field);  loInc = false; }
   if (spec.lte !== undefined) { hi = toNumber(spec.lte, field); hiInc = true; }
   if (spec.lt  !== undefined) { hi = toNumber(spec.lt, field);  hiInc = false; }
-  return columnNode(field, m, cat, lo, hi, loInc, hiInc);
+  return wrap(cat, field, columnNode(field, m, cat, lo, hi, loInc, hiInc), x =>
+    typeof x === 'number' && (loInc ? x >= lo : x > lo) && (hiInc ? x <= hi : x < hi));
 }
 
 /** A numeric range. Byte ranges come from the resident sparse index (§12.8). */
@@ -124,10 +151,11 @@ function compilePrefix(body, cat) {
   if (m.type === 'keyword') {
     // Enumeration happens in the catalog — resident, so zero probes (§12.3).
     const hits = Object.entries(m.values).filter(([v]) => v.startsWith(value));
-    if (hits.length === 0) return NONE;
-    return { op: 'or', children: hits.map(([, e]) => ({ op: 'section', name: e.section })) };
+    const node = hits.length === 0 ? NONE
+      : { op: 'or', children: hits.map(([, e]) => ({ op: 'section', name: e.section })) };
+    return wrap(cat, field, node, x => present(x) && String(x).startsWith(value));
   }
-  if (m.type === 'text') return wildcardNode(field, m, `${value}*`);
+  if (m.type === 'text') return textNode(cat, field, m, `${value}*`);
   throw new QueryError(`prefix on [${field}] requires keyword or text; it is [${m.type}]`);
 }
 
@@ -136,12 +164,13 @@ function compileWildcard(body, cat) {
   const pattern = String(unwrap(body[field]));
   const m = meta(field, cat);
   if (!m) return NONE;
-  if (m.type === 'text') return wildcardNode(field, m, pattern);
+  if (m.type === 'text') return textNode(cat, field, m, pattern);
   if (m.type === 'keyword') {
     const re = wildcardToRegExp(pattern);
     const hits = Object.entries(m.values).filter(([v]) => re.test(v));
-    if (hits.length === 0) return NONE;
-    return { op: 'or', children: hits.map(([, e]) => ({ op: 'section', name: e.section })) };
+    const node = hits.length === 0 ? NONE
+      : { op: 'or', children: hits.map(([, e]) => ({ op: 'section', name: e.section })) };
+    return wrap(cat, field, node, x => present(x) && re.test(String(x)));
   }
   throw new QueryError(`wildcard on [${field}] requires keyword or text; it is [${m.type}]`);
 }

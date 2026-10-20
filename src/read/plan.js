@@ -56,6 +56,8 @@ export function planFetches(node, cat, out = new Map()) {
       node.children.forEach(c => planFetches(c, cat, out)); break;
     case 'andNot':
       planFetches(node.left, cat, out); planFetches(node.right, cat, out); break;
+    // The overlay adds nothing to the wave: its data is resident (§5.1, inline).
+    case 'overlay': planFetches(node.inner, cat, out); break;
     default: break;
   }
   return out;
@@ -108,6 +110,11 @@ export function evaluate(node, got, cat) {
     }
     case 'andNot':
       return evaluate(node.left, got, cat).andNot(evaluate(node.right, got, cat));
+    case 'overlay': {
+      const ov = cat._overlay;
+      return evaluate(node.inner, got, cat).andNot(ov.dirty(node.field))
+        .or(ov.scan(node.field, node.test));
+    }
     default: throw new Error(`unknown plan op ${node.op}`);
   }
 }
@@ -146,7 +153,9 @@ function evalWildcard(node, got, cat) {
   const vbuf = got.get(node._valuesKey);
   const re = wildcardToRegExp(node.pattern);
   const out = Bitmap.empty(cat.docCount);
-  const tableLen = 4 * (cat.docCount + 1);
+  // The values table belongs to the base artifact; with a delta applied the doc-ID
+  // space is larger than the table, and docs past it are answered by the overlay.
+  const tableLen = 4 * ((cat.baseDocCount ?? cat.docCount) + 1);
   for (const docId of candidates.page(0, cat.docCount)) {
     const s = vbuf.readUInt32LE(docId * 4);
     const e = vbuf.readUInt32LE((docId + 1) * 4);

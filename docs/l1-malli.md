@@ -151,7 +151,7 @@ Tämä vastaa ClickHousen patch-partteja (25.7), jotka tunnistavat rivin
 | Tyyppi | Rakenne | Lisäys | Päivitys | Poisto |
 |---|---|---|---|---|
 | boolean / `exists` | bittikartta (A) | bitti häntään | set/clear-diff | live-maski |
-| keyword, matala kard. | bittikartta per arvo (A) + forward-sarake (A) | bitti arvon karttaan | vanhan arvon clear + uuden set (vanha arvo forward-storesta) | live-maski |
+| keyword, matala kard. | bittikartta per arvo (A) + forward-sarake (A) | bitti arvon karttaan | vanhan arvon clear + uuden set (vanha arvo forward-sarakkeesta) | live-maski |
 | keyword, korkea kard. | sivutettu sanakirja, kevyet inline, raskaat bittikarttoina; forward-sarake (A) | uusi arvo / id delta-sanakirjaan | kuten yllä | live-maski |
 | numeerinen | lajiteltu sarake + docs + harva indeksi (B); forward-sarake (A) | delta-ajo | dirty-maski + uusi arvo delta-ajoon | live-maski |
 | klusterointiavain | implisiittiset docID:t | kronologisesti: häntään ilmaiseksi | **poisto + lisäys** | live-maski |
@@ -163,9 +163,8 @@ Huomioita:
 
 - **Forward-sarake on pakollinen** päivitettäville kentille. Käänteinen
   rakenne (arvo → docs) ei kerro dokumentin *vanhaa* arvoa, jota tarvitaan
-  vanhan merkinnän poistamiseen. Kirjoittajan forward-store (§7) hoitaa tämän
-  kirjoituspuolella; artefaktin forward-sarake palvelee lukijaa (lajittelu,
-  korkean kardinaliteetin `terms`).
+  vanhan merkinnän poistamiseen. Sama forward-sarake palvelee sekä
+  kirjoittajaa (§7) että lukijaa (lajittelu, korkean kardinaliteetin `terms`).
 - **Kenttätyyppi jäätyy baseen.** Delta ei saa muuttaa kentän tyyppiä
   (keyword ↔ text) eikä päätellä sitä uudelleen.
 - **Tekstin vanhentuneita postituksia ei poisteta.** Wildcard varmennetaan
@@ -185,17 +184,32 @@ Huomioita:
 ```
 SQS FIFO (yksi message group)
    → kirjoittaja-Lambda (reserved concurrency 1, batching window)
-       → EFS: SQLite  pk → docID + kenttien nykyarvot      (forward-store)
-                      oplog: seq, pk, op, arvot             (rebuildin toisto)
+       → lukee julkaistua indeksiä range-lukijalla:
+           pk → docID          (pk-sanakirja, §4)
+           vanhat arvot        (forward-sarakkeet, §6)
+         /tmp = sivuvälimuisti, ei tilaa
        → flush:
-           PUT pack-<hash>          muuttuneet sivut ja diff-lohkot
+           PUT pack-<hash>          muuttuneet sivut, diff-lohkot, muuttuneiden pk:t
            PUT delta-<hash>         sivutaulun muutokset, inline-diffit
-           PUT root  If-Match       uusi versio
+           PUT root  If-Match       uusi versio + lastSeq
+       → SQS-kuittaus vasta root-PUTin jälkeen
 ```
 
 - **Kolme PUTia per flush**, muutosten määrästä riippumatta.
-- **EFS on kirjoittajan työtila**, jossa paikallaan muokkaus on sallittua.
-  Lukijat eivät koskaan lue EFS:ää; ne näkevät vain julkaistut objektit.
+- **Kirjoittajalla ei ole omaa pysyvää tilaa.** Pysyvä tila on julkaistu
+  indeksi (S3) ja julkaisemattomat operaatiot ovat jonossa (SQS). Lambdan
+  `/tmp` häviää ympäristön kierrätyksessä, joten se on vain välimuisti;
+  kylmäkäynnistys tarkoittaa tyhjää välimuistia, ei menetettyä tilaa.
+- **pk on uniikki korkean kardinaliteetin avainsana** ja tallennetaan
+  sivutettuna sanakirjana kuten muutkin (§4).
+- **Oplog on delta-packeissa:** jokainen delta tallentaa muuttuneiden
+  dokumenttien pk:t, joten rebuild voi toistaa muutokset > V pk:lla (§8).
+- **Kaatuminen root-PUTin ja kuittauksen välissä** johtaa uudelleenkäsittelyyn.
+  Absoluuttiset diffit (§5.2) ovat idempotentteja, ja root sisältää
+  `lastSeq`:n, jota pienemmät tai yhtä suuret viestit ohitetaan.
+- **EFS ei ole tarpeen.** Se olisi perusteltu vain, jos kirjoittajan
+  välimuistin lämmitys julkaistusta indeksistä osoittautuisi mitattuna liian
+  hitaaksi.
 - **Root-osoittimella on yksi omistaja** (kirjoittaja). Kompaktori ei
   kirjoita rootia (§8).
 - **docID:n jako:** uusi dokumentti saa seuraavan vapaan docID:n hännästä.
@@ -212,7 +226,7 @@ koske olemassa oleviin objekteihin.
 |---|---|---|
 | Mitä | diffit sovelletaan sivuihin; poistetut jäävät reiksi (`live = 0`) | uudelleennumerointi, reiät pois, uudelleenklusterointi |
 | docID:t | vakaat | muuttuvat |
-| Rebase | delta-merkinnät ≤ V pudotetaan | oplog > V toistetaan pk:lla uutta basea vasten |
+| Rebase | delta-merkinnät ≤ V pudotetaan | deltojen muutokset > V toistetaan pk:lla uutta basea vasten |
 | Kesto | nopea, voi olla osittainen (sivu- tai kenttäkohtainen) | pitkä (MML-rakennus 4 h 41 min) |
 | Missä | kirjoittaja-Lambda | Fargate / Batch |
 
@@ -263,8 +277,9 @@ delta-katalogi on muistissa.
 - Yksi objekti → monta objektia. "Tiedosto on artefakti" pätee vain
   kootulle versiolle.
 - Kyselyn pyyntömäärä kasvaa diff-rangejen ja live-maskin verran.
-- Kirjoittajalla on tila (EFS-forward-store ja oplog). Sitä ei voi välttää,
-  jos päivitys tarvitsee vanhan arvon.
+- Indeksiin tulee rakenteita, joita L0 ei tarvinnut: pk-sanakirja ja
+  forward-sarakkeet päivitettäville kentille. Ne ovat kirjoittajan ainoa
+  pysyvä tila, ja ne maksavat tilaa myös lukijalle.
 - `idx_research.md` §7.4:n heikennykset (MPH vain baseen, globaali
   enkoodaus vain baseen) pätevät edelleen.
 
@@ -299,7 +314,7 @@ verkkokauppa (`idea.md` §4) ja tarvittaessa ajoneuvoaineisto.
 
 **Vaihe 2:** root + sisältöosoitetut packit + COW-sivut.
 **Vaihe 3:** sivutettu sanakirja ja T-sääntö; binäärikatalogi.
-**Vaihe 4:** kirjoittaja-Lambda (SQS, EFS-SQLite) ja fold-kompaktointi.
+**Vaihe 4:** kirjoittaja-Lambda (SQS, /tmp-välimuisti, `lastSeq`) ja fold-kompaktointi.
 
 ## 12. Avoimet kysymykset
 
@@ -317,7 +332,10 @@ verkkokauppa (`idea.md` §4) ja tarvittaessa ajoneuvoaineisto.
 
 - **Paikallaan muokkaus EFS:llä lukijoille näkyvästi.** Kesken kyselyn
   tehty `pwrite` antaa revityn luvun, ja `immutable`-välimuisti lakkaa olemasta
-  totta. EFS jää kirjoittajan työtilaksi.
+  totta.
+- **EFS/SQLite kirjoittajan forward-storena.** Tarpeeton, koska pk-sanakirja
+  ja forward-sarakkeet ovat jo julkaistussa indeksissä; erillinen pysyvä
+  tila olisi toinen totuuden lähde.
 - **XOR-diffit.** Eivät ole idempotentteja; rebase kompaktoinnissa rikkoutuu.
 - **Poisto + lisäys jokaiselle päivitykselle.** Rikkoo klusteroinnin (§5.3).
 - **Arvot katalogissa.** Kasvaa kardinaliteetin mukana (§2, §4).

@@ -122,3 +122,69 @@ Sama aineisto, mutta järjestysavain on `(kokoluokka, hilbert)`, kokoluokat
   lukijatoteutuksen ero, ei formaatin.
 - FlatGeobufin R-puu on rakennettu tässä, koska JS-kirjoittaja ei tee indeksiä;
   GDAL:n kirjoittama puu voi poiketa järjestykseltään hieman.
+
+## Kirjoitukset
+
+FlatGeobuf ei tue satunnaisia kirjoituksia: spesifikaation mukaan lisäys onnistuu
+vain ilman spatiaalista indeksiä, koska pakattu R-puu riippuu kaikista kohteista.
+Jokainen muutos indeksoituun tiedostoon on siis **koko tiedoston uudelleenrakennus
+ja -lataus**, ja jokaisen lukijan välimuisti vanhenee kerralla.
+
+L0 + L1 (vaihe 1) kirjoittaa muutokset absoluuttisena deltana baseen. Spatiaalisella
+avaimella uusi kohde voi osua mihin tahansa, joten kirjoittaja ajetaan tilassa
+`unordered`: suodatus ja `geo_bounding_box` pysyvät tarkkoina, mutta järjestys
+klusterointiavaimen mukaan (sort, `search_after`, histogrammi) hylätään, kunnes
+kompaktointi palauttaa järjestyksen. Siirretty kohde saa uuden docID:n ja sen on
+kannettava bbox mukanaan (bbox on indeksoitu, ei tallennettu; vaihe 3:n
+forward-sarakkeet poistavat rajoituksen).
+
+Mitattu 1 000 000 polygonin kokoluokitellulla artefaktilla (`tools/bench-fgb/l1-write.mjs`):
+30 % uusia kohteita, 25 % luokan muutoksia, 25 % geometrian siirtoja (≤ 50 m),
+20 % poistoja. Jokaisen näkymän tulosmäärä ja luokittaiset määrät tarkistettiin
+referenssiä vastaan.
+
+| muutos | operaatioita | kirjoittaja | delta (JSON) | gzip | apply |
+|---|---|---|---|---|---|
+| 0,1 % | 1 000 | 23 ms | 137 kB | 45 kB | 4 ms |
+| 1 % | 10 000 | 92 ms | 1,3 MB | 423 kB | 16 ms |
+| 10 % | 100 000 | 683 ms | 13,1 MB | 4,0 MB | 295 ms |
+
+Lukuhinta deltan kanssa (kierrokset / lukuja / tavut tyhjällä välimuistilla;
+CPU-aika välimuistista):
+
+| näkymä | base | 0,1 % | 1 % | 10 % |
+|---|---|---|---|---|
+| 20 km | 2 / 38 / 11,2 MB | 2 / 38 / 11,2 MB · 178 ms | 2 / 38 / 11,2 MB · 160 ms | 2 / 38 / 11,2 MB · 192 ms |
+| 2 km | 2 / 9 / 649 kB | 2 / 9 / 649 kB · 8 ms | 2 / 9 / 649 kB · 10 ms | 2 / 9 / 649 kB · 15 ms |
+| 200 m | 2 / 8 / 277 kB | 2 / 8 / 277 kB · 1,3 ms | 2 / 8 / 277 kB · 1,9 ms | 2 / 8 / 277 kB · 11,7 ms |
+
+Saman muutoksen hinta FlatGeobufilla on aina koko tiedosto:
+
+| | FlatGeobuf | L0 + L1 |
+|---|---|---|
+| kirjoitettu per flush | 306,7 MB (koko tiedosto) | delta: 137 kB (1 000 muutosta) – 13 MB (100 000) |
+| kirjoitettu per muutos, 1 000 muutoksen erä | ~307 kB | ~137 B |
+| rakennusaika per flush | 11,5 s (uudelleenrakennus) | 23 ms – 0,7 s |
+| lukijan välimuisti | vanhenee kokonaan | base pysyy, uutta vain delta |
+| lukukierrokset muutoksen jälkeen | ennallaan (uusi tiedosto) | ennallaan (2) |
+
+Johtopäätökset:
+
+1. **Muutoksen hinta on L1:llä verrannollinen muutokseen, FlatGeobufilla
+   aineistoon.** Ero on kolme kertaluokkaa per muutos, ja se kasvaa aineiston
+   mukana.
+2. **Hinta siirtyy L1:llä lukijalle residenttinä deltana ja CPU:na**, ei
+   tavuina eikä kierroksina. 10 %:n muutoksella delta on 13 MB (4 MB gzip),
+   mikä on liikaa inline-deltaksi; inline-raja on tässäkin noin katalogin
+   kokoluokka (§11.1 `l1-malli.md`). Isommat muutokset kuuluvat packeihin tai
+   kompaktointiin. Kompaktointi on L0:n täysi rakennus (15 s tällä aineistolla),
+   eli sama työ jonka FlatGeobuf tekee jokaisella muutoksella.
+3. **Geometria tekee deltasta painavamman** kuin pelkkä attribuuttidata
+   (noin 130 B/operaatio JSONina, noin 40 B gzipattuna): geometria kulkee
+   base64-muodossa.
+4. **Kirjoittajan käynnistys** (vaiheen 1 pk-skannaus tallennetuista kentistä)
+   on 67 MB ja 2,1 s. Vaihe 3:n pk-sanakirja poistaa sen.
+
+Rajoitus: FlatGeobufin rakennusaika on mitattu tämän vertailun omalla
+rakentajalla (kirjaston serialisointi + R-puu bunilla); GDAL voi olla nopeampi,
+mutta kirjoitettavien tavujen määrä ei muutu.

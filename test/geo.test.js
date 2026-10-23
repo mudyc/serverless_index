@@ -102,3 +102,44 @@ test('L1: moved, added and deleted features', async () => {
   }
   await r.close();
 });
+
+test('L1: spatial appends anywhere (unordered) stay exact for geo, ordering is refused', async () => {
+  const r = await new Reader(path).open();
+  const w = await DeltaWriter.open(r, { unordered: true });
+  const live = new Map(docs.map(d => [d.id, d]));
+  const key = gridder(16, E);
+  for (let i = 0; i < 300; i++) {
+    const cx = rnd() * 1e5, cy = rnd() * 1e5, s = rnd() * 200;
+    const d = { id: `u${i}`, avain: key(cx, cy), luokka: 'a', bbox: [cx - s, cy - s, cx + s, cy + s] };
+    w.upsert(d); live.set(d.id, d);
+  }
+  // moving a feature changes its key: it must carry its box
+  const mv = docs.find(d => d.bbox);
+  assert.throws(() => w.patch(mv.id, { avain: 1 }), /include \[bbox\]/);
+  w.patch(mv.id, { avain: 1, bbox: [1, 1, 2, 2] }); live.set(mv.id, { ...mv, avain: 1, bbox: [1, 1, 2, 2] });
+  const delta = JSON.parse(JSON.stringify(w.toJSON()));
+  assert.equal(delta.unordered, true);
+  r.applyDelta(delta);
+  for (let i = 0; i < 50; i++) {
+    const wdt = rnd() * 20000, x0 = rnd() * (1e5 - wdt), y0 = rnd() * (1e5 - wdt);
+    const box = [x0, y0, x0 + wdt, y0 + wdt];
+    const res = await r.search({ query: q(box), size: 100000 });
+    assert.deepEqual(res.hits.hits.map(h => h._id).sort(), hits([...live.values()], box), `box ${box}`);
+  }
+  const res = await r.search({ query: q([0, 0, 3, 3]), size: 10 });
+  assert.ok(res.hits.hits.some(h => h._id === mv.id));
+  await assert.rejects(() => r.search({ query: q([0, 0, 1e5, 1e5]), sort: [{ avain: 'asc' }] }), /out-of-order/);
+  await assert.rejects(() => r.search({ query: q([0, 0, 1e5, 1e5]), search_after: [5] }), /out-of-order/);
+  await r.close();
+});
+
+test('L1: binary values survive the JSON delta', async () => {
+  const r = await new Reader(path).open();
+  const w = await DeltaWriter.open(r, { unordered: true });
+  w.upsert({ id: 'bin', avain: 7, bbox: [5, 5, 6, 6], geom: Buffer.from([1, 2, 3, 250]) });
+  r.applyDelta(JSON.parse(JSON.stringify(w.toJSON())));
+  const res = await r.search({ query: q([5, 5, 6, 6]), size: 10 });
+  const h = res.hits.hits.find(x => x._id === 'bin');
+  assert.deepEqual([...h._source.geom], [1, 2, 3, 250]);
+  await r.close();
+});

@@ -12,6 +12,7 @@ export const S = {
   colDocs:    f => `col:${f}:docs`,
   textValues: f => `txt:${f}:values`,
   trigrams:   f => `tri:${f}:postings`,
+  geoBox:     f => `geo:${f}:bbox`,
 };
 
 /** Trigrams of a string, lowercased. Used for infix narrowing (Stage C). */

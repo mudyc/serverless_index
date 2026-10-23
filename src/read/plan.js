@@ -58,9 +58,53 @@ export function planFetches(node, cat, out = new Map()) {
       planFetches(node.left, cat, out); planFetches(node.right, cat, out); break;
     // The overlay adds nothing to the wave: its data is resident (§5.1, inline).
     case 'overlay': planFetches(node.inner, cat, out); break;
+    case 'geobox': {
+      // Granule choice is pure arithmetic on resident boxes; only the per-doc
+      // boxes of the chosen granules are fetched, all in this one wave.
+      const m = cat.fields[node.field];
+      const sec = cat.sections[m.sections.bbox];
+      const n = cat.baseDocCount ?? cat.docCount;
+      node._spans = geoSpans(m, node.box, n);
+      node._keys = node._spans.map(([d0, d1]) => {
+        const key = `${m.sections.bbox}@${d0}:${d1}`;
+        out.set(key, { offset: sec.offset + d0 * 32, length: (d1 - d0) * 32 });
+        return key;
+      });
+      break;
+    }
     default: break;
   }
   return out;
+}
+
+const _granuleCache = new WeakMap();
+function granuleBoxes(m) {
+  let gb = _granuleCache.get(m);
+  if (!gb) {
+    const raw = typeof Buffer !== 'undefined' ? Buffer.from(m.granuleBoxes, 'base64')
+      : Uint8Array.from(atob(m.granuleBoxes), c => c.charCodeAt(0));
+    gb = new Float32Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
+    _granuleCache.set(m, gb);
+  }
+  return gb;
+}
+
+/**
+ * Doc-ID spans [d0, d1) of the granules whose resident box meets the query box.
+ * Neighbouring spans closer than `mergeGap` granules are joined: a few granules
+ * of over-read cost less than one more request in the wave.
+ */
+function geoSpans(m, [x0, y0, x1, y1], n, mergeGap = 2) {
+  const gb = granuleBoxes(m), G = m.granule, ng = gb.length / 4;
+  const spans = [];
+  for (let g = 0; g < ng; g++) {
+    const b = g * 4;
+    if (!(gb[b] <= x1 && gb[b + 2] >= x0 && gb[b + 1] <= y1 && gb[b + 3] >= y0)) continue;
+    const d0 = g * G, d1 = Math.min(n, d0 + G);
+    const last = spans[spans.length - 1];
+    if (last && d0 - last[1] <= mergeGap * G) last[1] = d1; else spans.push([d0, d1]);
+  }
+  return spans;
 }
 
 /**
@@ -110,6 +154,19 @@ export function evaluate(node, got, cat) {
     }
     case 'andNot':
       return evaluate(node.left, got, cat).andNot(evaluate(node.right, got, cat));
+    case 'geobox': {
+      const bm = Bitmap.empty(n);
+      const [x0, y0, x1, y1] = node.box;
+      node._spans.forEach(([d0], i) => {
+        const buf = got.get(node._keys[i]);
+        for (let k = 0, d = d0; k + 32 <= buf.length; k += 32, d++) {
+          // NaN (absent) fails every comparison, so it is never a hit.
+          if (buf.readDoubleLE(k) <= x1 && buf.readDoubleLE(k + 16) >= x0 &&
+              buf.readDoubleLE(k + 8) <= y1 && buf.readDoubleLE(k + 24) >= y0) bm.set(d);
+        }
+      });
+      return bm;
+    }
     case 'overlay': {
       const ov = cat._overlay;
       return evaluate(node.inner, got, cat).andNot(ov.dirty(node.field))

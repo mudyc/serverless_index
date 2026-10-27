@@ -62,7 +62,8 @@ distinct values and trigram-indexed text above it.
 `match_all`, `match_none`, `term`, `terms`, `exists`, `range` (`gt`/`gte`/`lt`/`lte`,
 numbers, `Date`, or ISO strings), `prefix`, `wildcard` (`*` and `?`), `bool`
 (`must`/`filter`/`should`/`must_not`/`minimum_should_match`), `size`, `from`,
-`sort`, `search_after`.
+`sort`, `search_after`, `geo_bounding_box` (box intersection on a `bboxFields` field; see
+`test/geo.test.js`).
 
 The response envelope is OpenSearch-shaped. Unsupported clauses **throw** rather
 than silently returning wrong results.

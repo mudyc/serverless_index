@@ -48,6 +48,9 @@ export async function build({
   blockSize = DEFAULT_BLOCK_SIZE, granule = DEFAULT_GRANULE, outPath, fieldTypes,
   keywordMaxCardinality = DEFAULT_KEYWORD_MAX_CARDINALITY,
   indexFields, storedFields,
+  // Fields holding a bounding box [minx, miny, maxx, maxy]. Indexed for
+  // geo_bounding_box (intersection), never stored: the geometry is the payload.
+  bboxFields = [],
 }) {
   // ---- 1. Clustering order: doc IDs ascend with the clustering key (§2) ----
   const ordered = [...docs].sort((a, b) => {
@@ -194,6 +197,44 @@ export async function build({
     };
   }
 
+  // ---- 5b. bounding boxes (geo_bounding_box) -------------------------------
+  // A bbox column in DOCUMENT order (f64 x 4 per doc, NaN when absent): the
+  // address of any document's box is arithmetic, like a bitmap's bit. Beside it,
+  // one box per granule of the clustering order, resident in the catalog — the
+  // lowest inner level of an R-tree, kept in memory so that choosing granules
+  // costs no I/O. A feature is found when its BOX meets the query box, not only
+  // its centre, which is what a Hilbert key alone cannot promise.
+  for (const f of bboxFields) {
+    const col = Buffer.alloc(docCount * 32);
+    const eb = Bitmap.empty(docCount);
+    const ng = Math.ceil(docCount / granule);
+    const gb = new Float32Array(ng * 4).fill(NaN);
+    ordered.forEach((d, i) => {
+      const b = d[f];
+      const ok = Array.isArray(b) && b.length === 4 && b.every(Number.isFinite);
+      for (let j = 0; j < 4; j++) col.writeDoubleLE(ok ? b[j] : NaN, i * 32 + j * 8);
+      if (!ok) return;
+      eb.set(i);
+      const g = Math.floor(i / granule) * 4;
+      // float32 rounded OUTWARD: a granule box may only ever be too large.
+      const lo = v => { const x = Math.fround(v); return x > v ? nextDown32(x) : x; };
+      const hi = v => { const x = Math.fround(v); return x < v ? nextUp32(x) : x; };
+      if (Number.isNaN(gb[g])) { gb[g] = lo(b[0]); gb[g + 1] = lo(b[1]); gb[g + 2] = hi(b[2]); gb[g + 3] = hi(b[3]); }
+      else {
+        gb[g] = Math.min(gb[g], lo(b[0])); gb[g + 1] = Math.min(gb[g + 1], lo(b[1]));
+        gb[g + 2] = Math.max(gb[g + 2], hi(b[2])); gb[g + 3] = Math.max(gb[g + 3], hi(b[3]));
+      }
+    });
+    putBM(S.exists(f), eb);
+    put(S.geoBox(f), col);
+    fields[f] = {
+      type: 'geo_bbox', granule,
+      sections: { exists: S.exists(f), bbox: S.geoBox(f) },
+      granuleBoxes: Buffer.from(gb.buffer).toString('base64'),
+      stats: { existsCount: eb.popcount() },
+    };
+  }
+
   // ---- 6. stored fields ---------------------------------------------------
   // A binary value rides BESIDE the JSON, not inside it. Base64 would add a third
   // to the largest component of a geometry artifact, and geometry is the payload
@@ -207,7 +248,8 @@ export async function build({
   // geometry. Measured on one map sheet those four fields were 65% of the
   // attribute bytes — all of it duplication I had introduced myself.
   const storedSet = storedFields ? new Set(storedFields) : null;
-  const isStored = k => !storedSet || storedSet.has(k);
+  const bboxSet = new Set(bboxFields);
+  const isStored = k => !bboxSet.has(k) && (!storedSet || storedSet.has(k));
 
   const binarySet = new Set();
   for (const d of ordered) for (const [k, v] of Object.entries(d))
@@ -341,6 +383,10 @@ export async function build({
   return { file: Buffer.concat([...chunks, catBuf, footer]), catalog, bytes: totalBytes };
 }
 
+const f32 = new Float32Array(1), u32v = new Uint32Array(f32.buffer);
+function nextUp32(x) { f32[0] = x; if (x >= 0) u32v[0]++; else u32v[0]--; return f32[0]; }
+function nextDown32(x) { f32[0] = x; if (x > 0) u32v[0]--; else if (x === 0) { f32[0] = -1e-45; return f32[0]; } else u32v[0]++; return f32[0]; }
+
 /** [value, docId] every `granule` documents, in clustering order (§2). */
 function buildBoundaries(ordered, field, granule) {
   const out = [];
@@ -356,6 +402,7 @@ function capabilitiesOf(fields) {
     if (m.type === 'numeric') caps.add(`column:${f}`);
     if (m.type === 'keyword') caps.add(`bitmap:${f}`);
     if (m.type === 'text') caps.add(`trigram:${f}`);
+    if (m.type === 'geo_bbox') caps.add(`geo_bbox:${f}`);
   }
   return [...caps];
 }

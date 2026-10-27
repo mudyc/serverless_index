@@ -27,6 +27,7 @@ export function compile(query, catalog) {
     case 'prefix':     return compilePrefix(body, catalog);
     case 'wildcard':   return compileWildcard(body, catalog);
     case 'bool':       return compileBool(body, catalog);
+    case 'geo_bounding_box': return compileGeoBox(body, catalog);
     default:
       throw new QueryError(`unsupported query type [${type}]`);
   }
@@ -188,6 +189,36 @@ function wildcardNode(field, m, pattern) {
   const impossible = [...grams].some(g => m.trigrams[g] === undefined);
   if (impossible) return NONE;                 // a required trigram exists nowhere
   return { op: 'wildcard', field, pattern, grams: usable };
+}
+
+/**
+ * OpenSearch-shaped geo_bounding_box over a bbox field, in the artifact's own
+ * (projected) coordinates. Matches documents whose box INTERSECTS the query box —
+ * the same semantics as a FlatGeobuf/R-tree bbox search.
+ *   { geo_bounding_box: { f: { top_left: [x0, y1], bottom_right: [x1, y0] } } }
+ *   { geo_bounding_box: { f: { top: y1, left: x0, bottom: y0, right: x1 } } }
+ * Points may also be { lon, lat } or { x, y } objects.
+ */
+function compileGeoBox(body, cat) {
+  const field = Object.keys(body).find(k => k !== 'validation_method' && k !== 'type' && k !== '_name');
+  const spec = body[field];
+  const m = meta(field, cat);
+  if (!m) return NONE;
+  if (m.type !== 'geo_bbox') throw new QueryError(`geo_bounding_box on [${field}] requires a bbox field; it is [${m.type}]`);
+  const pt = p => Array.isArray(p) ? [Number(p[0]), Number(p[1])]
+    : [Number(p.lon ?? p.x), Number(p.lat ?? p.y)];
+  let x0, y0, x1, y1;
+  if (spec.top_left && spec.bottom_right) {
+    const tl = pt(spec.top_left), br = pt(spec.bottom_right);
+    x0 = tl[0]; y1 = tl[1]; x1 = br[0]; y0 = br[1];
+  } else if (['top', 'left', 'bottom', 'right'].every(k => spec[k] !== undefined)) {
+    x0 = Number(spec.left); x1 = Number(spec.right); y0 = Number(spec.bottom); y1 = Number(spec.top);
+  } else throw new QueryError(`geo_bounding_box [${field}] needs top_left/bottom_right or top/left/bottom/right`);
+  if (![x0, y0, x1, y1].every(Number.isFinite)) throw new QueryError(`geo_bounding_box [${field}]: non-numeric corner`);
+  if (x0 > x1 || y0 > y1) return NONE;
+  const box = [x0, y0, x1, y1];
+  return wrap(cat, field, { op: 'geobox', field, box }, v => Array.isArray(v) && v.length === 4 &&
+    v[0] <= x1 && v[2] >= x0 && v[1] <= y1 && v[3] >= y0);
 }
 
 function compileBool(body, cat) {

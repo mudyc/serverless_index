@@ -28,5 +28,8 @@
     "l1-measure": "node tools/l1-measure.js"
   },
   "keywords": ["index", "search", "serverless", "s3", "http-range", "lambda", "olap", "hilbert"],
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": {
+    "rbush": "4.0.1"
+  }
 }

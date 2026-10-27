@@ -1,0 +1,2 @@
+{ "center": [591891, 6803376],
+  "boxes": { "country": null, "region 200 km": 100000, "city 20 km": 10000, "district 2 km": 1000, "block 200 m": 100 } }

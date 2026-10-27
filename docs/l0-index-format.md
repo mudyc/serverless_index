@@ -63,7 +63,7 @@ distinct values and trigram-indexed text above it.
 numbers, `Date`, or ISO strings), `prefix`, `wildcard` (`*` and `?`), `bool`
 (`must`/`filter`/`should`/`must_not`/`minimum_should_match`), `size`, `from`,
 `sort`, `search_after`, `geo_bounding_box` (box intersection on a `bboxFields` field; see
-`docs/vertailu-flatgeobuf.md`).
+`test/geo.test.js`).
 
 The response envelope is OpenSearch-shaped. Unsupported clauses **throw** rather
 than silently returning wrong results.

@@ -97,6 +97,17 @@ export class Reader {
     const from = body.from ?? 0;
     const { field: sortField, order } = resolveSort(body.sort, cat);
     const secondary = sortField !== cat.clustering.field;
+    if (this.overlay?.unordered) {
+      // Doc IDs past the base are no longer in clustering order (spatial appends).
+      // Results come back in physical order; anything that promises the
+      // clustering order is refused rather than answered wrongly.
+      const explicit = body.sort && !secondary;
+      const hist = Object.values(body.aggs ?? {}).some(a => a.histogram);
+      if (explicit || body.search_after !== undefined || hist) {
+        throw new QueryError(`the delta has out-of-order appends; ordering by ` +
+          `[${cat.clustering.field}] (sort, search_after, histogram) needs a compaction first`);
+      }
+    }
 
     // ---- plan: local, no I/O -------------------------------------------
     const plan = compile(body.query, cat);

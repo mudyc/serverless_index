@@ -1,4 +1,5 @@
 import { Bitmap } from '../bitmap.js';
+import { decodeDoc } from './codec.js';
 
 /**
  * L1, phase 1: a base L0 artifact plus ONE inline delta (docs/l1-malli.md §5, §11).
@@ -39,7 +40,10 @@ export class Overlay {
     this.N = delta.docCount;
     if (this.N < this.baseN) throw new Error('delta docCount is smaller than the base');
     this.seq = delta.seq ?? 0;
-    this.docs = new Map(delta.docs);
+    this.docs = new Map(delta.docs.map(([d, doc]) => [d, decodeDoc(doc)]));
+    // Appends that broke the clustering order (spatial keys): filters stay
+    // exact, ordering by the clustering key does not.
+    this.unordered = !!delta.unordered;
     this.live = Bitmap.full(this.N);
     for (const d of delta.deleted) clearBit(this.live, d);
     this._dirtyLists = new Map(Object.entries(delta.dirty ?? {}).map(([f, ids]) => [f, new Set(ids)]));

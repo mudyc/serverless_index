@@ -1,3 +1,5 @@
+import { decodeDoc } from './codec.js';
+
 /**
  * L1 phase 1 writer: turns insert / update / delete operations into an absolute
  * delta against one base artifact (docs/l1-malli.md §5, §7).
@@ -9,6 +11,18 @@
  *  - old values come from the stored record, not from forward columns (§6).
  *  - the whole delta is inline. Diff blocks in packs and COW pages are phase 2.
  */
+/** Binary values (geometry) travel in the JSON delta as { $b64 }. */
+function encodeDoc(doc) {
+  let out = null;
+  for (const [k, v] of Object.entries(doc)) {
+    if (v instanceof Uint8Array) {
+      out ??= { ...doc };
+      out[k] = { $b64: Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString('base64') };
+    }
+  }
+  return out ?? doc;
+}
+
 export class L1OrderError extends Error {
   constructor(message) { super(message); this.name = 'L1OrderError'; }
 }
@@ -22,10 +36,16 @@ export class DeltaWriter {
    * @param reader  an opened Reader on the base artifact (any delta on it is ignored)
    * @param delta   optional delta to continue from (same base)
    */
-  static async open(reader, { delta = null, pkField = 'id' } = {}) {
+  static async open(reader, { delta = null, pkField = 'id', unordered = false } = {}) {
     const w = new DeltaWriter(reader, pkField);
+    // A spatial clustering key has no "tail": a new feature lands anywhere. With
+    // `unordered`, appends may break the clustering order. Filters and
+    // geo_bounding_box stay exact; ordering by the clustering key does not, so
+    // the reader refuses it until compaction restores the order.
+    w.unordered = unordered;
+    w.outOfOrder = false;
     await w._bootstrap();
-    if (delta) w._load(delta);
+    if (delta) { w._load(delta); w.outOfOrder = !!delta.unordered; }
     return w;
   }
 
@@ -71,7 +91,8 @@ export class DeltaWriter {
       this.deleted.add(d);
       if (d < this.baseN) this.pk.delete(String(this.baseDocs.get(d)[this.pkField]));
     }
-    for (const [d, doc] of delta.docs) {
+    for (const [d, raw] of delta.docs) {
+      const doc = decodeDoc(raw);
       this.docs.set(d, doc);
       this.pk.set(String(doc[this.pkField]), d);
     }
@@ -136,6 +157,13 @@ export class DeltaWriter {
   _replace(d, next) {
     const prev = this.docs.get(d) ?? this.baseDocs.get(d);
     if (!same(prev[this.cf], next[this.cf])) {
+      // Phase 1 reads old values from the stored record, and bbox fields are
+      // indexed but not stored: a document moved to a new doc ID must carry its
+      // box explicitly, or it would silently drop out of geo_bounding_box.
+      for (const [f, m] of Object.entries(this.base.fields))
+        if (m.type === 'geo_bbox' && !(f in next))
+          throw new Error(`moving ${this.pkField}=${next[this.pkField]}: include [${f}] in the update ` +
+            `(indexed, not stored; forward columns are phase 3)`);
       // The clustering key decides the doc ID (§5.3): moving it is delete + append.
       this._checkOrder(next);
       this._kill(d);
@@ -164,6 +192,7 @@ export class DeltaWriter {
     const [tv, tpk] = this.tail;
     const pk = String(doc[this.pkField]);
     if (v > tv || (v === tv && pk.localeCompare(tpk) > 0)) return;
+    if (this.unordered) { this.outOfOrder = true; return; }
     throw new L1OrderError(
       `[${this.cf}]=${v} would land before the last document (${tv}); an append must ` +
       `continue the clustering order. Out-of-order inserts need a rebuild (docs/l1-malli.md §8).`);
@@ -174,7 +203,8 @@ export class DeltaWriter {
     const d = this.N++;
     this.docs.set(d, doc);
     this.pk.set(String(doc[this.pkField]), d);
-    this.tail = [doc[this.cf], String(doc[this.pkField])];
+    const t = [doc[this.cf], String(doc[this.pkField])];
+    if (!this.tail || t[0] > this.tail[0] || (t[0] === this.tail[0] && t[1].localeCompare(this.tail[1]) > 0)) this.tail = t;
   }
 
   toJSON() {
@@ -186,8 +216,9 @@ export class DeltaWriter {
       seq: this.seq,
       docCount: this.N,
       deleted: [...this.deleted].sort((a, b) => a - b),
-      docs: [...this.docs].sort((a, b) => a[0] - b[0]),
+      docs: [...this.docs].sort((a, b) => a[0] - b[0]).map(([d, doc]) => [d, encodeDoc(doc)]),
       dirty,
+      ...(this.outOfOrder ? { unordered: true } : {}),
     };
   }
 }
